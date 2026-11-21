@@ -84,6 +84,83 @@ namespace dxbc {
         static bool IsSignatureChunk(uint32_t fourCC);
     };
 
+    // D3D10_SB_OPCODE_TYPE / D3D11_SB_OPCODE_TYPE values we use.
+    namespace opcode {
+        constexpr uint32_t Call = 4;
+        constexpr uint32_t CallC = 5;
+        constexpr uint32_t Ieq = 32;
+        constexpr uint32_t Label = 44;
+        constexpr uint32_t CustomData = 53;
+        constexpr uint32_t Mov = 54;
+        constexpr uint32_t Movc = 55;
+        constexpr uint32_t Ret = 62;
+        constexpr uint32_t RetC = 63;
+        constexpr uint32_t SampleL = 72;
+        constexpr uint32_t DclResource = 88;
+        constexpr uint32_t DclSampler = 90;
+        constexpr uint32_t DclInput = 95;
+        constexpr uint32_t DclOutput = 101;
+        constexpr uint32_t DclOutputSgv = 102;
+        constexpr uint32_t DclOutputSiv = 103;
+        constexpr uint32_t DclTemps = 104;
+        constexpr uint32_t DclGlobalFlags = 106;
+        constexpr uint32_t InterfaceCall = 120;
+        constexpr uint32_t DclResourceRaw = 161;
+        constexpr uint32_t DclResourceStructured = 162;
+    } // namespace opcode
+
+    // D3D10_SB_OPERAND_TYPE values we use.
+    namespace operand_type {
+        constexpr uint32_t Temp = 0;
+        constexpr uint32_t Input = 1;
+        constexpr uint32_t Output = 2;
+        constexpr uint32_t Immediate32 = 4;
+        constexpr uint32_t Sampler = 6;
+        constexpr uint32_t Resource = 7;
+    } // namespace operand_type
+
+    // D3D10_SB_NAME value for SV_ViewportArrayIndex (in declarations and signatures).
+    constexpr uint32_t kNameViewportArrayIndex = 5;
+    // D3D_NAME value for SV_Position in signatures.
+    constexpr uint32_t kNamePosition = 1;
+    // D3D_REGISTER_COMPONENT_TYPE value for uint in signatures.
+    constexpr uint32_t kComponentTypeUInt32 = 1;
+
+    // Whether the opcode is a declaration (dcl_*), whose operands have a declaration-specific layout.
+    bool IsDeclaration(uint32_t opcode);
+
+    // Operand token fields.
+    inline uint32_t OperandType(uint32_t token) {
+        return (token >> 12) & 0xff;
+    }
+    inline uint32_t OperandIndexDimension(uint32_t token) {
+        return (token >> 20) & 0x3;
+    }
+    inline uint32_t OperandIndexRepresentation(uint32_t token, uint32_t dimension) {
+        return (token >> (22 + 3 * dimension)) & 0x7;
+    }
+    inline uint32_t SetOperandType(uint32_t token, uint32_t type) {
+        return (token & ~(0xffu << 12)) | (type << 12);
+    }
+
+    // A top-level operand of an instruction: the position of its operand token, and of its first index token (right
+    // after the operand token and its extended operand tokens).
+    struct OperandLocation {
+        size_t token = 0;
+        size_t firstIndex = 0;
+    };
+
+    // Encodes a 4-component swizzle, components 0 to 3 for x to w.
+    constexpr uint32_t Swizzle(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+        return x | (y << 2) | (z << 4) | (w << 6);
+    }
+    constexpr uint32_t kSwizzleXYZW = Swizzle(0, 1, 2, 3);
+
+    // Builders for simple operands (register with a 1D immediate index, or a scalar immediate).
+    std::vector<uint32_t> DestinationOperand(uint32_t type, uint32_t index, uint8_t writeMask);
+    std::vector<uint32_t> SourceOperand(uint32_t type, uint32_t index, uint32_t swizzle);
+    std::vector<uint32_t> ImmediateOperand(uint32_t value);
+
     // One instruction (or declaration) of the shader program, as raw tokens. The first token is the opcode token.
     struct Instruction {
         std::vector<uint32_t> tokens;
@@ -92,6 +169,13 @@ namespace dxbc {
         uint32_t Opcode() const {
             return tokens[0] & 0x7ff;
         }
+
+        // Builds a non-declaration instruction from its operands, with no extended opcode token.
+        static Instruction Make(uint32_t opcode, std::initializer_list<std::vector<uint32_t>> operands);
+
+        // Locates the top-level operands of a non-declaration instruction. Returns false if the instruction cannot be
+        // decoded.
+        bool GetOperands(std::vector<OperandLocation>& operands) const;
     };
 
     struct Program {

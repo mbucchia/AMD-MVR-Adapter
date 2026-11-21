@@ -121,6 +121,19 @@ namespace {
             state.agsDevice = returnedParams.pDevice;
             state.agsExtensions = returnedParams.extensionsSupported;
 
+            // With the debug layer, our patched shaders warn on every draw that nothing is bound to the sampler slot of
+            // the AMD intrinsics (which is expected: the driver intercepts that sample). Hide the warning, since some
+            // applications break on warnings.
+            // TODO: This also hides the warning for the application's own sampler slots.
+            Microsoft::WRL::ComPtr<ID3D11InfoQueue> infoQueue;
+            if (SUCCEEDED(returnedParams.pDevice->QueryInterface(IID_PPV_ARGS(&infoQueue)))) {
+                D3D11_MESSAGE_ID hide[] = {D3D11_MESSAGE_ID_DEVICE_DRAW_SAMPLER_NOT_SET};
+                D3D11_INFO_QUEUE_FILTER filter{};
+                filter.DenyList.NumIDs = ARRAYSIZE(hide);
+                filter.DenyList.pIDList = hide;
+                infoQueue->AddStorageFilterEntries(&filter);
+            }
+
             *ppDevice = returnedParams.pDevice;
             if (ppImmediateContext) {
                 *ppImmediateContext = returnedParams.pImmediateContext;

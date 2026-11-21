@@ -377,6 +377,123 @@ namespace dxbc {
         return true;
     }
 
+    bool IsDeclaration(uint32_t opcode) {
+        return (opcode >= opcode::DclResource && opcode <= opcode::DclGlobalFlags) || // D3D10 declarations
+               (opcode >= 113 && opcode <= 116) ||                                    // Hull shader phases
+               (opcode >= 143 && opcode <= 162) ||                                    // D3D11 declarations
+               opcode == opcode::CustomData;
+    }
+
+    std::vector<uint32_t> DestinationOperand(uint32_t type, uint32_t index, uint8_t writeMask) {
+        // 4 components, mask selection mode, 1D immediate index.
+        return {2u | (uint32_t(writeMask & 0xf) << 4) | (type << 12) | (1u << 20), index};
+    }
+
+    std::vector<uint32_t> SourceOperand(uint32_t type, uint32_t index, uint32_t swizzle) {
+        // 4 components, swizzle selection mode, 1D immediate index.
+        return {2u | (1u << 2) | ((swizzle & 0xff) << 4) | (type << 12) | (1u << 20), index};
+    }
+
+    std::vector<uint32_t> ImmediateOperand(uint32_t value) {
+        // 1 component (replicated to all components), no index.
+        return {1u | (operand_type::Immediate32 << 12), value};
+    }
+
+    Instruction Instruction::Make(uint32_t opcode, std::initializer_list<std::vector<uint32_t>> operands) {
+        Instruction instruction;
+        instruction.tokens.push_back(opcode);
+        for (const auto& operand : operands) {
+            instruction.tokens.insert(instruction.tokens.end(), operand.begin(), operand.end());
+        }
+        instruction.tokens[0] |= uint32_t(instruction.tokens.size()) << 24;
+        return instruction;
+    }
+
+    namespace {
+
+        // Skips one operand (with its extended tokens, immediate values and indices, recursively for relative
+        // indices). Returns the position after the operand, or 0 if it does not fit in `end`.
+        size_t SkipOperand(const std::vector<uint32_t>& tokens, size_t position, size_t end, size_t* firstIndex) {
+            if (position >= end) {
+                return 0;
+            }
+            const uint32_t token = tokens[position++];
+            if (token & 0x80000000) {
+                // Extended operand tokens, chained by their bit 31.
+                do {
+                    if (position >= end) {
+                        return 0;
+                    }
+                } while (tokens[position++] & 0x80000000);
+            }
+            if (firstIndex) {
+                *firstIndex = position;
+            }
+
+            const uint32_t numComponents = token & 0x3; // 0 = 0, 1 = 1, 2 = 4 components.
+            const uint32_t type = OperandType(token);
+            if (type == operand_type::Immediate32) {
+                position += numComponents == 2 ? 4 : 1;
+            } else if (type == 5) { // Immediate64
+                position += numComponents == 2 ? 4 : 2;
+            }
+
+            const uint32_t dimension = OperandIndexDimension(token);
+            for (uint32_t i = 0; i < dimension; i++) {
+                switch (OperandIndexRepresentation(token, i)) {
+                case 0: // Immediate32
+                    position += 1;
+                    break;
+                case 1: // Immediate64
+                    position += 2;
+                    break;
+                case 2: // Relative
+                    position = SkipOperand(tokens, position, end, nullptr);
+                    break;
+                case 3: // Immediate32 + relative
+                    position = SkipOperand(tokens, position + 1, end, nullptr);
+                    break;
+                case 4: // Immediate64 + relative
+                    position = SkipOperand(tokens, position + 2, end, nullptr);
+                    break;
+                default:
+                    return 0;
+                }
+                if (position == 0) {
+                    return 0;
+                }
+            }
+            return position <= end ? position : 0;
+        }
+
+    } // namespace
+
+    bool Instruction::GetOperands(std::vector<OperandLocation>& operands) const {
+        operands.clear();
+        if (IsDeclaration(Opcode())) {
+            return false;
+        }
+        size_t position = 1;
+        if (tokens[0] & 0x80000000) {
+            // Extended opcode tokens, chained by their bit 31.
+            do {
+                if (position >= tokens.size()) {
+                    return false;
+                }
+            } while (tokens[position++] & 0x80000000);
+        }
+        while (position < tokens.size()) {
+            OperandLocation operand;
+            operand.token = position;
+            position = SkipOperand(tokens, position, tokens.size(), &operand.firstIndex);
+            if (position == 0) {
+                return false;
+            }
+            operands.push_back(operand);
+        }
+        return true;
+    }
+
     Chunk Program::Serialize() const {
         Chunk chunk;
         chunk.fourCC = fourCC;

@@ -23,4 +23,4 @@ Translating calls on the CPU is the easy part of the process. Rewriting the vert
 
 - Only planar projection: no Lens Matched Shading (Modified W, fast GS culling) or Multi-Res Shading.
 - One render target slice per view cannot be expressed: AGS replicates draws to every combination of viewport and slice in its masks.
-- View broadcasting is applied to the immediate context of the AGS device, regardless of the device or context passed by the application.
+- View broadcasting is applied to the immediate context of the device passed by the application, even when it passes a deferred context.

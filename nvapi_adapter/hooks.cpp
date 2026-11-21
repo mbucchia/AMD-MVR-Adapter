@@ -62,7 +62,7 @@ namespace {
         auto& state = adapter::GetState();
 
         // Nested calls, and calls we cannot handle (feature level probing with no device returned).
-        if (t_inDeviceCreation || !ppDevice) {
+        if (t_inDeviceCreation || !ppDevice || state.agsUnavailable) {
             return g_original_D3D11CreateDeviceAndSwapChain(pAdapter,
                                                             DriverType,
                                                             Software,
@@ -78,15 +78,22 @@ namespace {
         }
         t_inDeviceCreation = true;
 
-        if (!state.agsInitAttempted) {
-            state.agsInitAttempted = true;
+        // A new context for each device (see adapter::AgsDevice).
+        AGSContext* context = nullptr;
+        {
             AGSGPUInfo gpuInfo{};
-            const AGSReturnCode result = agsInitialize(AGS_CURRENT_VERSION, nullptr, &state.agsContext, &gpuInfo);
-            logging::Log("agsInitialize() returned %d (Radeon Software: %s)\n",
-                         result,
-                         result == AGS_SUCCESS && gpuInfo.radeonSoftwareVersion ? gpuInfo.radeonSoftwareVersion : "?");
+            const AGSReturnCode result = agsInitialize(AGS_CURRENT_VERSION, nullptr, &context, &gpuInfo);
             if (result != AGS_SUCCESS) {
-                state.agsContext = nullptr;
+                logging::Log("agsInitialize() returned %d\n", result);
+                context = nullptr;
+                state.agsUnavailable = true;
+            } else {
+                static bool logged = false;
+                if (!logged) {
+                    logging::Log("agsInitialize() succeeded (Radeon Software: %s)\n",
+                                 gpuInfo.radeonSoftwareVersion ? gpuInfo.radeonSoftwareVersion : "?");
+                    logged = true;
+                }
             }
         }
 
@@ -109,17 +116,17 @@ namespace {
 
         AGSDX11ReturnedParams returnedParams{};
         HRESULT hr;
-        if (state.agsContext &&
-            agsDriverExtensionsDX11_CreateDevice(
-                state.agsContext, &creationParams, &extensionParams, &returnedParams) == AGS_SUCCESS) {
-            logging::Log("Created D3D11 device %p through AGS (multiView=%u)\n",
+        if (context && agsDriverExtensionsDX11_CreateDevice(
+                           context, &creationParams, &extensionParams, &returnedParams) == AGS_SUCCESS) {
+            logging::Log("Created D3D11 device %p through AGS context %p (multiView=%u)\n",
                          returnedParams.pDevice,
+                         context,
                          returnedParams.extensionsSupported.multiView);
 
-            // TODO: AGS wants agsDriverExtensionsDX11_DestroyDevice() to be called to release the device. For now the
-            // application simply releases it, which may leak AGS's internal resources.
-            state.agsDevice = returnedParams.pDevice;
-            state.agsExtensions = returnedParams.extensionsSupported;
+            {
+                std::lock_guard lock(state.agsDevicesMutex);
+                state.agsDevices[returnedParams.pDevice] = {context, returnedParams.extensionsSupported};
+            }
 
             // With the debug layer, our patched shaders warn on every draw that nothing is bound to the sampler slot of
             // the AMD intrinsics (which is expected: the driver intercepts that sample). Hide the warning, since some
@@ -148,7 +155,10 @@ namespace {
             }
             hr = S_OK;
         } else {
-            logging::Log("Could not create the device through AGS, falling back without AGS\n");
+            if (context) {
+                logging::Log("Could not create the device through AGS, falling back without AGS\n");
+                agsDeInitialize(context);
+            }
             hr = g_original_D3D11CreateDeviceAndSwapChain(pAdapter,
                                                           DriverType,
                                                           Software,
@@ -217,6 +227,30 @@ namespace {
 } // namespace
 
 namespace adapter {
+
+    bool FindAgsDevice(IUnknown* deviceOrContext, AgsDevice& agsDevice) {
+        if (!deviceOrContext) {
+            return false;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Device> device;
+        if (FAILED(deviceOrContext->QueryInterface(IID_PPV_ARGS(&device)))) {
+            Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+            if (FAILED(deviceOrContext->QueryInterface(IID_PPV_ARGS(&context)))) {
+                return false;
+            }
+            context->GetDevice(&device);
+        }
+
+        auto& state = GetState();
+        std::lock_guard lock(state.agsDevicesMutex);
+        const auto it = state.agsDevices.find(device.Get());
+        if (it == state.agsDevices.end()) {
+            return false;
+        }
+        agsDevice = it->second;
+        return true;
+    }
 
     void InstallHooks() {
         DetourTransactionBegin();

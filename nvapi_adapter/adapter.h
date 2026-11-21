@@ -24,16 +24,23 @@
 
 namespace adapter {
 
+    struct AgsDevice {
+        AGSContext* context = nullptr;
+        AGSDX11ExtensionsSupported extensions{};
+    };
+
     // Global state shared between the D3D11 hooks and the NVAPI implementation.
     struct State {
         HMODULE module = nullptr;
 
-        bool agsInitAttempted = false;
-        AGSContext* agsContext = nullptr;
+        // Set when agsInitialize() failed (no AMD driver): we no longer try to create devices through AGS.
+        bool agsUnavailable = false;
 
-        // The last device created through AGS, and the extensions available on it.
-        ID3D11Device* agsDevice = nullptr;
-        AGSDX11ExtensionsSupported agsExtensions{};
+        // Keep track of AGS contexts, keyed by their ID3D11Device interface.
+        // TODO: Possible leak because AGS holds references  which are only released by
+        // agsDriverExtensionsDX11_DestroyDevice().
+        std::mutex agsDevicesMutex;
+        std::unordered_map<ID3D11Device*, AgsDevice> agsDevices;
 
         // The last view broadcast masks enabled (for logging).
         unsigned long long vpMask = 0;
@@ -41,6 +48,8 @@ namespace adapter {
     };
 
     State& GetState();
+
+    bool FindAgsDevice(IUnknown* deviceOrContext, AgsDevice& agsDevice);
 
     void InstallHooks();
     void UninstallHooks();

@@ -64,9 +64,16 @@ namespace {
 
 #define LOG_CALL() logging::Log("--> %s\n", __func__)
 
-    bool IsMultiViewAvailable() {
-        const auto& state = adapter::GetState();
-        return state.agsContext && state.agsExtensions.multiView;
+    // Whether the device (or the device of the context) was created through AGS with multi-view.
+    bool IsMultiViewAvailable(IUnknown* deviceOrContext, adapter::AgsDevice* agsDevice = nullptr) {
+        adapter::AgsDevice device;
+        if (!adapter::FindAgsDevice(deviceOrContext, device) || !device.extensions.multiView) {
+            return false;
+        }
+        if (agsDevice) {
+            *agsDevice = device;
+        }
+        return true;
     }
 
     // Translate NVIDIA's multi-view/single-pass stereo state into AGS view broadcasting.
@@ -74,9 +81,16 @@ namespace {
     // With NVIDIA, view N is routed by the viewport mask output by the (fast) geometry shader. For planar projection,
     // view N goes to viewport N. With AGS, the draw is replicated to every viewport set in vpMask, and the shaders
     // can query which viewport they are running for with AmdDxExtShaderIntrinsics_GetViewportIndex().
-    NvAPI_Status SetViewBroadcast(NvU32 numViews, const NvU32* renderTargetIndexOffset) {
+    NvAPI_Status SetViewBroadcast(IUnknown* deviceOrContext, NvU32 numViews, const NvU32* renderTargetIndexOffset) {
         auto& state = adapter::GetState();
-        if (!IsMultiViewAvailable()) {
+        adapter::AgsDevice agsDevice;
+        if (!IsMultiViewAvailable(deviceOrContext, &agsDevice)) {
+            static bool logged = false;
+            if (!logged) {
+                logging::Log("View broadcasting requested on %p, which was not created through AGS with multi-view\n",
+                             deviceOrContext);
+                logged = true;
+            }
             return NVAPI_NOT_SUPPORTED;
         }
         if (numViews > NV_MULTIVIEW_MAX_SUPPORTED_VIEWS) {
@@ -105,10 +119,10 @@ namespace {
             state.rtSliceMask = rtSliceMask;
         }
 
-        // TODO: This applies to the immediate context of the AGS device, regardless of the device/context passed by
-        // the application.
+        // TODO: This applies to the immediate context of the device, even when the application passes a deferred
+        // context.
         const AGSReturnCode result =
-            agsDriverExtensionsDX11_SetViewBroadcastMasks(state.agsContext, vpMask, rtSliceMask, 0);
+            agsDriverExtensionsDX11_SetViewBroadcastMasks(agsDevice.context, vpMask, rtSliceMask, 0);
         if (result != AGS_SUCCESS) {
             logging::Log("agsDriverExtensionsDX11_SetViewBroadcastMasks() failed: %d\n", result);
             return NVAPI_ERROR;
@@ -143,7 +157,7 @@ NvAPI_Status __cdecl NvAPI_D3D11_IsNvShaderExtnOpCodeSupported(IUnknown* pDev, N
     }
     // TODO: The VRWorks sample checks FP16 atomics as a proxy for Maxwell or later before it queries the VR features,
     // so we claim support. Shaders actually using them would not work.
-    *pSupported = opCode == NV_EXTN_OP_FP16_ATOMIC && IsMultiViewAvailable();
+    *pSupported = opCode == NV_EXTN_OP_FP16_ATOMIC && IsMultiViewAvailable(pDev);
     return NVAPI_OK;
 }
 
@@ -156,8 +170,8 @@ NvAPI_Status __cdecl NvAPI_D3D_QueryMultiViewSupport(
     if (pQueryMultiViewSupportedParams->version != NV_QUERY_MULTIVIEW_SUPPORT_PARAMS_VER1) {
         return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
     }
-    pQueryMultiViewSupportedParams->bMultiViewSupported = IsMultiViewAvailable();
-    pQueryMultiViewSupportedParams->bSinglePassStereoSupported = IsMultiViewAvailable();
+    pQueryMultiViewSupportedParams->bMultiViewSupported = IsMultiViewAvailable(pDevice);
+    pQueryMultiViewSupportedParams->bSinglePassStereoSupported = IsMultiViewAvailable(pDevice);
     return NVAPI_OK;
 }
 
@@ -184,7 +198,7 @@ NvAPI_Status __cdecl NvAPI_D3D_QuerySinglePassStereoSupport(
         pQuerySinglePassStereoSupportedParams->version != NV_QUERY_SINGLE_PASS_STEREO_SUPPORT_PARAMS_VER2) {
         return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
     }
-    pQuerySinglePassStereoSupportedParams->bSinglePassStereoSupported = IsMultiViewAvailable();
+    pQuerySinglePassStereoSupportedParams->bSinglePassStereoSupported = IsMultiViewAvailable(pDevice);
     return NVAPI_OK;
 }
 
@@ -196,7 +210,7 @@ NvAPI_Status __cdecl NvAPI_D3D_SetMultiViewMode(IUnknown* pDevOrContext, NV_MULT
         return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
     }
     // TODO: independentViewportMaskEnable is ignored: views always go to viewport 0..numViews-1.
-    return SetViewBroadcast(pMultiViewParams->numViews, pMultiViewParams->renderTargetIndexOffset);
+    return SetViewBroadcast(pDevOrContext, pMultiViewParams->numViews, pMultiViewParams->renderTargetIndexOffset);
 }
 
 NvAPI_Status __cdecl NvAPI_D3D_SetModifiedWMode(IUnknown* pDevOrContext, NV_MODIFIED_W_PARAMS* psModifiedWParams) {
@@ -217,7 +231,7 @@ NvAPI_Status __cdecl NvAPI_D3D_SetSinglePassStereoMode(IUnknown* pDevOrContext,
         return NVAPI_INVALID_ARGUMENT;
     }
     const NvU32 offsets[2] = {0, renderTargetIndexOffset};
-    return SetViewBroadcast(numViews, offsets);
+    return SetViewBroadcast(pDevOrContext, numViews, offsets);
 }
 
 // Patch the shader bytecode to translate necessary constructs from NVIDIA SPS/MVR to AMD AGS.

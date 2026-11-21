@@ -33,6 +33,7 @@
 #include <share.h>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <d3d11.h>

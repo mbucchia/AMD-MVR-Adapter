@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.37827.9 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "demo_dx11", "deps\VRWorks\multiprojection_dx\demo\dx11\demo_dx11.vs2015.vcxproj", "{5729189D-A329-4507-9E64-C3C72C4C379A}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "util", "deps\VRWorks\multiprojection_dx\demo\common\util\util.vs2015.vcxproj", "{059ADADD-603C-4508-B2C6-8B0BA87BA4C9}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Framework", "Framework", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5729189D-A329-4507-9E64-C3C72C4C379A}.Debug|x64.ActiveCfg = Debug|x64
+		{5729189D-A329-4507-9E64-C3C72C4C379A}.Debug|x64.Build.0 = Debug|x64
+		{5729189D-A329-4507-9E64-C3C72C4C379A}.Release|x64.ActiveCfg = Release|x64
+		{5729189D-A329-4507-9E64-C3C72C4C379A}.Release|x64.Build.0 = Release|x64
+		{059ADADD-603C-4508-B2C6-8B0BA87BA4C9}.Debug|x64.ActiveCfg = Debug|x64
+		{059ADADD-603C-4508-B2C6-8B0BA87BA4C9}.Debug|x64.Build.0 = Debug|x64
+		{059ADADD-603C-4508-B2C6-8B0BA87BA4C9}.Release|x64.ActiveCfg = Release|x64
+		{059ADADD-603C-4508-B2C6-8B0BA87BA4C9}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{059ADADD-603C-4508-B2C6-8B0BA87BA4C9} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9FD358F7-8EAC-46D2-9E2E-F5CB86E2CF87}
+	EndGlobalSection
+EndGlobal

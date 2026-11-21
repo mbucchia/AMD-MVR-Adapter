@@ -2739,6 +2739,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	(void)lpCmdLine;
 	(void)nCmdShow;
 
+#if 1
+	// TEMPORARY: pre-load the our nvapi64.dll before NvAPI_Initialize() tries to load
+	// the real NVAPI from System32. To be removed once we have a proper injection method.
+	{
+		char path[MAX_PATH];
+		const DWORD length = GetModuleFileNameA(NULL, path, MAX_PATH);
+		char* lastSlash = length > 0 && length < MAX_PATH ? strrchr(path, '\\') : NULL;
+		if (lastSlash && (lastSlash - path) + sizeof("\\nvapi64.dll") <= MAX_PATH)
+		{
+			strcpy_s(lastSlash, MAX_PATH - (lastSlash - path), "\\nvapi64.dll");
+			if (!LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH))
+			{
+				OutputDebugStringA("Failed to pre-load nvapi64.dll from the .exe folder\n");
+			}
+		}
+	}
+#endif
+
 	if (!ProcessCommandLine())
 		return 1;
 

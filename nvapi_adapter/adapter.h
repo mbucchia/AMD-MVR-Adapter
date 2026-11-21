@@ -34,6 +34,10 @@ namespace adapter {
         // The last device created through AGS, and the extensions available on it.
         ID3D11Device* agsDevice = nullptr;
         AGSDX11ExtensionsSupported agsExtensions{};
+
+        // The last view broadcast masks enabled (for logging).
+        unsigned long long vpMask = 0;
+        unsigned long long rtSliceMask = 0;
     };
 
     State& GetState();

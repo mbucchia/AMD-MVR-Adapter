@@ -63,6 +63,58 @@ namespace {
 
 #define LOG_CALL() logging::Log("--> %s\n", __func__)
 
+    bool IsMultiViewAvailable() {
+        const auto& state = adapter::GetState();
+        return state.agsContext && state.agsExtensions.multiView;
+    }
+
+    // Translate NVIDIA's multi-view/single-pass stereo state into AGS view broadcasting.
+    //
+    // With NVIDIA, view N is routed by the viewport mask output by the (fast) geometry shader. For planar projection,
+    // view N goes to viewport N. With AGS, the draw is replicated to every viewport set in vpMask, and the shaders
+    // can query which viewport they are running for with AmdDxExtShaderIntrinsics_GetViewportIndex().
+    NvAPI_Status SetViewBroadcast(NvU32 numViews, const NvU32* renderTargetIndexOffset) {
+        auto& state = adapter::GetState();
+        if (!IsMultiViewAvailable()) {
+            return NVAPI_NOT_SUPPORTED;
+        }
+        if (numViews > NV_MULTIVIEW_MAX_SUPPORTED_VIEWS) {
+            return NVAPI_INVALID_ARGUMENT;
+        }
+
+        // A single view means no replication: AGS disables it when both masks are 0.
+        unsigned long long vpMask = 0;
+        unsigned long long rtSliceMask = 0;
+        if (numViews > 1) {
+            vpMask = (1ull << numViews) - 1;
+            for (NvU32 i = 0; i < numViews; i++) {
+                rtSliceMask |= 1ull << renderTargetIndexOffset[i];
+            }
+            // TODO: AGS replicates to every (viewport, slice) combination. Supporting one slice per view would require
+            // additional logic.
+            if (__popcnt64(rtSliceMask) > 1) {
+                logging::Log("Rendering views to different render target slices is not supported\n");
+            }
+        }
+
+        // The application toggles the same states every frame: only log each one the first time.
+        if (vpMask && (vpMask != state.vpMask || rtSliceMask != state.rtSliceMask)) {
+            logging::Log("Setting view broadcast masks: vpMask=0x%llx rtSliceMask=0x%llx\n", vpMask, rtSliceMask);
+            state.vpMask = vpMask;
+            state.rtSliceMask = rtSliceMask;
+        }
+
+        // TODO: This applies to the immediate context of the AGS device, regardless of the device/context passed by
+        // the application.
+        const AGSReturnCode result =
+            agsDriverExtensionsDX11_SetViewBroadcastMasks(state.agsContext, vpMask, rtSliceMask, 0);
+        if (result != AGS_SUCCESS) {
+            logging::Log("agsDriverExtensionsDX11_SetViewBroadcastMasks() failed: %d\n", result);
+            return NVAPI_ERROR;
+        }
+        return NVAPI_OK;
+    }
+
 } // namespace
 
 NvAPI_Status __cdecl NvAPI_Initialize() {
@@ -88,12 +140,14 @@ NvAPI_Status __cdecl NvAPI_D3D11_IsNvShaderExtnOpCodeSupported(IUnknown* pDev, N
     if (!pDev || !pSupported) {
         return NVAPI_INVALID_ARGUMENT;
     }
-    *pSupported = false;
+    // TODO: The VRWorks sample checks FP16 atomics as a proxy for Maxwell or later before it queries the VR features,
+    // so we claim support. Shaders actually using them would not work.
+    *pSupported = opCode == NV_EXTN_OP_FP16_ATOMIC && IsMultiViewAvailable();
     return NVAPI_OK;
 }
 
-NvAPI_Status __cdecl NvAPI_D3D_QueryMultiViewSupport(IUnknown* pDevice,
-                                                     NV_QUERY_MULTIVIEW_SUPPORT_PARAMS* pQueryMultiViewSupportedParams) {
+NvAPI_Status __cdecl NvAPI_D3D_QueryMultiViewSupport(
+    IUnknown* pDevice, NV_QUERY_MULTIVIEW_SUPPORT_PARAMS* pQueryMultiViewSupportedParams) {
     LOG_CALL();
     if (!pDevice || !pQueryMultiViewSupportedParams) {
         return NVAPI_INVALID_ARGUMENT;
@@ -101,13 +155,13 @@ NvAPI_Status __cdecl NvAPI_D3D_QueryMultiViewSupport(IUnknown* pDevice,
     if (pQueryMultiViewSupportedParams->version != NV_QUERY_MULTIVIEW_SUPPORT_PARAMS_VER1) {
         return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
     }
-    pQueryMultiViewSupportedParams->bMultiViewSupported = false;
-    pQueryMultiViewSupportedParams->bSinglePassStereoSupported = false;
+    pQueryMultiViewSupportedParams->bMultiViewSupported = IsMultiViewAvailable();
+    pQueryMultiViewSupportedParams->bSinglePassStereoSupported = IsMultiViewAvailable();
     return NVAPI_OK;
 }
 
-NvAPI_Status __cdecl NvAPI_D3D_QueryModifiedWSupport(IUnknown* pDev,
-                                                     NV_QUERY_MODIFIED_W_SUPPORT_PARAMS* pQueryModifiedWSupportedParams) {
+NvAPI_Status __cdecl NvAPI_D3D_QueryModifiedWSupport(
+    IUnknown* pDev, NV_QUERY_MODIFIED_W_SUPPORT_PARAMS* pQueryModifiedWSupportedParams) {
     LOG_CALL();
     if (!pDev || !pQueryModifiedWSupportedParams) {
         return NVAPI_INVALID_ARGUMENT;
@@ -129,13 +183,19 @@ NvAPI_Status __cdecl NvAPI_D3D_QuerySinglePassStereoSupport(
         pQuerySinglePassStereoSupportedParams->version != NV_QUERY_SINGLE_PASS_STEREO_SUPPORT_PARAMS_VER2) {
         return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
     }
-    pQuerySinglePassStereoSupportedParams->bSinglePassStereoSupported = false;
+    pQuerySinglePassStereoSupportedParams->bSinglePassStereoSupported = IsMultiViewAvailable();
     return NVAPI_OK;
 }
 
 NvAPI_Status __cdecl NvAPI_D3D_SetMultiViewMode(IUnknown* pDevOrContext, NV_MULTIVIEW_PARAMS* pMultiViewParams) {
-    LOG_CALL();
-    return NVAPI_NOT_SUPPORTED;
+    if (!pDevOrContext || !pMultiViewParams) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    if (pMultiViewParams->version != NV_MULTIVIEW_PARAMS_VER1) {
+        return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
+    }
+    // TODO: independentViewportMaskEnable is ignored: views always go to viewport 0..numViews-1.
+    return SetViewBroadcast(pMultiViewParams->numViews, pMultiViewParams->renderTargetIndexOffset);
 }
 
 NvAPI_Status __cdecl NvAPI_D3D_SetModifiedWMode(IUnknown* pDevOrContext, NV_MODIFIED_W_PARAMS* psModifiedWParams) {
@@ -147,20 +207,25 @@ NvAPI_Status __cdecl NvAPI_D3D_SetSinglePassStereoMode(IUnknown* pDevOrContext,
                                                        NvU32 numViews,
                                                        NvU32 renderTargetIndexOffset,
                                                        NvU8 independentViewportMaskEnable) {
-    logging::Log("--> %s(numViews=%u, renderTargetIndexOffset=%u, independentViewportMaskEnable=%u)\n",
-                 __func__,
-                 numViews,
-                 renderTargetIndexOffset,
-                 independentViewportMaskEnable);
-    return NVAPI_NOT_SUPPORTED;
+    if (!pDevOrContext) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    // Single pass stereo is multi-view limited to 2 views, where the right view is offset by renderTargetIndexOffset.
+    // TODO: independentViewportMaskEnable is ignored: views always go to viewport 0 and 1.
+    if (numViews > 2) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    const NvU32 offsets[2] = {0, renderTargetIndexOffset};
+    return SetViewBroadcast(numViews, offsets);
 }
 
-NvAPI_Status __cdecl NvAPI_D3D11_CreateVertexShaderEx(ID3D11Device* pDevice,
-                                                      const void* pShaderBytecode,
-                                                      SIZE_T BytecodeLength,
-                                                      ID3D11ClassLinkage* pClassLinkage,
-                                                      const NvAPI_D3D11_CREATE_VERTEX_SHADER_EX* pCreateVertexShaderExArgs,
-                                                      ID3D11VertexShader** ppVertexShader) {
+NvAPI_Status __cdecl NvAPI_D3D11_CreateVertexShaderEx(
+    ID3D11Device* pDevice,
+    const void* pShaderBytecode,
+    SIZE_T BytecodeLength,
+    ID3D11ClassLinkage* pClassLinkage,
+    const NvAPI_D3D11_CREATE_VERTEX_SHADER_EX* pCreateVertexShaderExArgs,
+    ID3D11VertexShader** ppVertexShader) {
     LOG_CALL();
     if (!pDevice || !pCreateVertexShaderExArgs || !ppVertexShader) {
         return NVAPI_INVALID_ARGUMENT;
@@ -185,12 +250,13 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateHullShaderEx(ID3D11Device* pDevice,
                : NVAPI_ERROR;
 }
 
-NvAPI_Status __cdecl NvAPI_D3D11_CreateDomainShaderEx(ID3D11Device* pDevice,
-                                                      const void* pShaderBytecode,
-                                                      SIZE_T BytecodeLength,
-                                                      ID3D11ClassLinkage* pClassLinkage,
-                                                      const NvAPI_D3D11_CREATE_DOMAIN_SHADER_EX* pCreateDomainShaderExArgs,
-                                                      ID3D11DomainShader** ppDomainShader) {
+NvAPI_Status __cdecl NvAPI_D3D11_CreateDomainShaderEx(
+    ID3D11Device* pDevice,
+    const void* pShaderBytecode,
+    SIZE_T BytecodeLength,
+    ID3D11ClassLinkage* pClassLinkage,
+    const NvAPI_D3D11_CREATE_DOMAIN_SHADER_EX* pCreateDomainShaderExArgs,
+    ID3D11DomainShader** ppDomainShader) {
     LOG_CALL();
     if (!pDevice || !pCreateDomainShaderExArgs || !ppDomainShader) {
         return NVAPI_INVALID_ARGUMENT;
@@ -211,6 +277,13 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateGeometryShaderEx_2(
     if (!pDevice || !pCreateGeometryShaderExArgs || !ppGeometryShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
+    if (pCreateGeometryShaderExArgs->ForceFastGS) {
+        // A fast GS emits a single vertex per triangle with a viewport mask, which is only possible on NVIDIA
+        // hardware.
+        logging::Log("Dropping fast geometry shader\n");
+        *ppGeometryShader = nullptr;
+        return NVAPI_OK;
+    }
     return SUCCEEDED(pDevice->CreateGeometryShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppGeometryShader))
                ? NVAPI_OK
                : NVAPI_ERROR;
@@ -227,12 +300,13 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateFastGeometryShaderExplicit(
     return NVAPI_NOT_SUPPORTED;
 }
 
-NvAPI_Status __cdecl NvAPI_D3D11_CreatePixelShaderEx_2(ID3D11Device* pDevice,
-                                                       const void* pShaderBytecode,
-                                                       SIZE_T BytecodeLength,
-                                                       ID3D11ClassLinkage* pClassLinkage,
-                                                       const NvAPI_D3D11_CREATE_PIXEL_SHADER_EX* pCreatePixelShaderExArgs,
-                                                       ID3D11PixelShader** ppPixelShader) {
+NvAPI_Status __cdecl NvAPI_D3D11_CreatePixelShaderEx_2(
+    ID3D11Device* pDevice,
+    const void* pShaderBytecode,
+    SIZE_T BytecodeLength,
+    ID3D11ClassLinkage* pClassLinkage,
+    const NvAPI_D3D11_CREATE_PIXEL_SHADER_EX* pCreatePixelShaderExArgs,
+    ID3D11PixelShader** ppPixelShader) {
     LOG_CALL();
     if (!pDevice || !pCreatePixelShaderExArgs || !ppPixelShader) {
         return NVAPI_INVALID_ARGUMENT;

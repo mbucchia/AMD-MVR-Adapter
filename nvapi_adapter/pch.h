@@ -36,6 +36,7 @@
 #include <wrl/client.h>
 
 #include <nvapi.h>
+#include <nvShaderExtnEnums.h>
 
 #include <amd_ags.h>
 

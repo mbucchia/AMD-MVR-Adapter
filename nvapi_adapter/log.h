@@ -25,5 +25,6 @@
 namespace logging {
 
     void Log(const char* fmt, ...);
+    std::wstring GetDataDirectory();
 
 } // namespace logging

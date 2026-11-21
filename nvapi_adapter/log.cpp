@@ -33,22 +33,29 @@ namespace {
     void OpenLogFile() {
         g_logFileOpenAttempted = true;
 
-        wchar_t localAppData[MAX_PATH];
-        const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-        if (length == 0 || length >= MAX_PATH) {
+        const std::wstring directory = logging::GetDataDirectory();
+        if (directory.empty()) {
             return;
         }
-        std::wstring path = std::wstring(localAppData) + L"\\AMD-MVR-Adapter";
-        CreateDirectoryW(path.c_str(), nullptr);
-        path += L"\\nvapi_adapter.log";
 
         // Allow other processes (and editors) to read the log while we hold it open.
-        g_logFile = _wfsopen(path.c_str(), L"w", _SH_DENYWR);
+        g_logFile = _wfsopen((directory + L"\\nvapi_adapter.log").c_str(), L"w", _SH_DENYWR);
     }
 
 } // namespace
 
 namespace logging {
+
+    std::wstring GetDataDirectory() {
+        wchar_t localAppData[MAX_PATH];
+        const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH) {
+            return {};
+        }
+        const std::wstring path = std::wstring(localAppData) + L"\\AMD-MVR-Adapter";
+        CreateDirectoryW(path.c_str(), nullptr);
+        return path;
+    }
 
     void Log(const char* fmt, ...) {
         char buffer[1024];

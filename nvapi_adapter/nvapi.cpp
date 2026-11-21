@@ -24,6 +24,7 @@
 
 #include "adapter.h"
 #include "log.h"
+#include "shaders.h"
 
 namespace {
 
@@ -219,6 +220,20 @@ NvAPI_Status __cdecl NvAPI_D3D_SetSinglePassStereoMode(IUnknown* pDevOrContext,
     return SetViewBroadcast(numViews, offsets);
 }
 
+// Patch the shader bytecode to translate necessary constructs from NVIDIA SPS/MVR to AMD AGS.
+template <typename ExArgs>
+std::pair<const void*, SIZE_T> ProcessShader(const char* stage,
+                                             const void* pShaderBytecode,
+                                             SIZE_T BytecodeLength,
+                                             const ExArgs* args,
+                                             std::vector<uint8_t>& storage) {
+    if (shaders::ProcessShader(
+            stage, pShaderBytecode, BytecodeLength, args->NumCustomSemantics, args->pCustomSemantics, storage)) {
+        return {storage.data(), storage.size()};
+    }
+    return {pShaderBytecode, BytecodeLength};
+}
+
 NvAPI_Status __cdecl NvAPI_D3D11_CreateVertexShaderEx(
     ID3D11Device* pDevice,
     const void* pShaderBytecode,
@@ -230,7 +245,9 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateVertexShaderEx(
     if (!pDevice || !pCreateVertexShaderExArgs || !ppVertexShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
-    return SUCCEEDED(pDevice->CreateVertexShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppVertexShader))
+    std::vector<uint8_t> storage;
+    const auto [bytecode, length] = ProcessShader("vs", pShaderBytecode, BytecodeLength, pCreateVertexShaderExArgs, storage);
+    return SUCCEEDED(pDevice->CreateVertexShader(bytecode, length, pClassLinkage, ppVertexShader))
                ? NVAPI_OK
                : NVAPI_ERROR;
 }
@@ -245,7 +262,9 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateHullShaderEx(ID3D11Device* pDevice,
     if (!pDevice || !pCreateHullShaderExArgs || !ppHullShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
-    return SUCCEEDED(pDevice->CreateHullShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppHullShader))
+    std::vector<uint8_t> storage;
+    const auto [bytecode, length] = ProcessShader("hs", pShaderBytecode, BytecodeLength, pCreateHullShaderExArgs, storage);
+    return SUCCEEDED(pDevice->CreateHullShader(bytecode, length, pClassLinkage, ppHullShader))
                ? NVAPI_OK
                : NVAPI_ERROR;
 }
@@ -261,7 +280,9 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateDomainShaderEx(
     if (!pDevice || !pCreateDomainShaderExArgs || !ppDomainShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
-    return SUCCEEDED(pDevice->CreateDomainShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppDomainShader))
+    std::vector<uint8_t> storage;
+    const auto [bytecode, length] = ProcessShader("ds", pShaderBytecode, BytecodeLength, pCreateDomainShaderExArgs, storage);
+    return SUCCEEDED(pDevice->CreateDomainShader(bytecode, length, pClassLinkage, ppDomainShader))
                ? NVAPI_OK
                : NVAPI_ERROR;
 }
@@ -278,13 +299,17 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateGeometryShaderEx_2(
         return NVAPI_INVALID_ARGUMENT;
     }
     if (pCreateGeometryShaderExArgs->ForceFastGS) {
+        std::vector<uint8_t> storage;
+        ProcessShader("fastgs", pShaderBytecode, BytecodeLength, pCreateGeometryShaderExArgs, storage);
         // A fast GS emits a single vertex per triangle with a viewport mask, which is only possible on NVIDIA
         // hardware.
         logging::Log("Dropping fast geometry shader\n");
         *ppGeometryShader = nullptr;
         return NVAPI_OK;
     }
-    return SUCCEEDED(pDevice->CreateGeometryShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppGeometryShader))
+    std::vector<uint8_t> storage;
+    const auto [bytecode, length] = ProcessShader("gs", pShaderBytecode, BytecodeLength, pCreateGeometryShaderExArgs, storage);
+    return SUCCEEDED(pDevice->CreateGeometryShader(bytecode, length, pClassLinkage, ppGeometryShader))
                ? NVAPI_OK
                : NVAPI_ERROR;
 }
@@ -311,7 +336,9 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreatePixelShaderEx_2(
     if (!pDevice || !pCreatePixelShaderExArgs || !ppPixelShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
-    return SUCCEEDED(pDevice->CreatePixelShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppPixelShader))
+    std::vector<uint8_t> storage;
+    const auto [bytecode, length] = ProcessShader("ps", pShaderBytecode, BytecodeLength, pCreatePixelShaderExArgs, storage);
+    return SUCCEEDED(pDevice->CreatePixelShader(bytecode, length, pClassLinkage, ppPixelShader))
                ? NVAPI_OK
                : NVAPI_ERROR;
 }

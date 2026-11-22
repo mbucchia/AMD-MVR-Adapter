@@ -186,25 +186,49 @@ namespace {
     }
 
     // Describe the adapter a device is created on, with its real vendor (for logging).
-    std::string DescribeAdapter(IDXGIAdapter* adapter) {
+    // The description of the adapter a device is created on (the default adapter when null), with its real vendor.
+    bool GetAdapterDesc(IDXGIAdapter* adapter, DXGI_ADAPTER_DESC& desc) {
         Microsoft::WRL::ComPtr<IDXGIAdapter> target = adapter;
         if (!target) {
             Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
             if (!g_original_CreateDXGIFactory1 || FAILED(g_original_CreateDXGIFactory1(IID_PPV_ARGS(&factory))) ||
                 FAILED(factory->EnumAdapters(0, &target))) {
-                return "default adapter (?)";
+                return false;
             }
         }
+        return SUCCEEDED(g_original_GetDesc ? g_original_GetDesc(target.Get(), &desc) : target->GetDesc(&desc));
+    }
+
+    std::string DescribeAdapter(IDXGIAdapter* adapter) {
         DXGI_ADAPTER_DESC desc{};
-        const HRESULT hr = g_original_GetDesc ? g_original_GetDesc(target.Get(), &desc) : target->GetDesc(&desc);
-        if (FAILED(hr)) {
-            return "?";
+        if (!GetAdapterDesc(adapter, desc)) {
+            return adapter ? "?" : "default adapter (?)";
         }
         char description[128];
         WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, description, sizeof(description), nullptr, nullptr);
         char result[192];
         sprintf_s(result, "%s%s (vendor 0x%04x)", adapter ? "" : "default adapter: ", description, desc.VendorId);
         return result;
+    }
+
+    // Tells the user, once, that SPS/MVR will not be available.
+    void ReportMultiViewUnsupported(const char* details) {
+        static std::once_flag once;
+        std::call_once(once, [details] {
+            logging::Log("ERROR: Your GPU or driver does not support multi-view (AMD view broadcasting): Single Pass "
+                         "Stereo and Multi-View Rendering will not be available. %s\n",
+                         details);
+        });
+    }
+
+    // Checks whether a device created on an AMD GPU got multi-view. A device on another GPU (for example of a
+    // hybrid system) never has multi-view, which is expected.
+    void CheckMultiViewSupport(IDXGIAdapter* adapter, bool multiView, const std::string& reason = {}) {
+        DXGI_ADAPTER_DESC desc{};
+        if (multiView || !GetAdapterDesc(adapter, desc) || desc.VendorId != kVendorIdAmd) {
+            return;
+        }
+        ReportMultiViewUnsupported(("GPU: " + DescribeAdapter(adapter) + "." + (reason.empty() ? "" : " " + reason)).c_str());
     }
 
     HMODULE WINAPI hooked_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
@@ -257,6 +281,11 @@ namespace {
             const AGSReturnCode result = agsInitialize(AGS_CURRENT_VERSION, nullptr, &context, &gpuInfo);
             if (result != AGS_SUCCESS) {
                 logging::Log("agsInitialize() returned %d\n", result);
+                char details[128];
+                sprintf_s(details,
+                          "AMD GPU Services (AGS) could not be initialized (error %d): is an AMD GPU and driver installed?",
+                          result);
+                ReportMultiViewUnsupported(details);
                 context = nullptr;
                 state.agsUnavailable = true;
             } else {
@@ -296,6 +325,7 @@ namespace {
                          returnedParams.pDevice,
                          context,
                          returnedParams.extensionsSupported.multiView);
+            CheckMultiViewSupport(pAdapter, returnedParams.extensionsSupported.multiView);
 
             {
                 std::lock_guard lock(state.agsDevicesMutex);
@@ -340,6 +370,7 @@ namespace {
                              pFeatureLevels && FeatureLevels ? pFeatureLevels[0] : 0,
                              ppSwapChain && pSwapChainDesc ? "yes" : "no");
                 agsDeInitialize(context);
+                CheckMultiViewSupport(pAdapter, false, "AGS could not create the device (error " + std::to_string(agsResult) + ").");
             }
             hr = g_original_D3D11CreateDeviceAndSwapChain(pAdapter,
                                                           DriverType,

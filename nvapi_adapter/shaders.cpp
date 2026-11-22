@@ -77,9 +77,9 @@ namespace {
     }
 
     void LogSignature(const dxbc::Signature& signature) {
-        logging::Log("  %s:\n", dxbc::FourCCToString(signature.fourCC).c_str());
+        LOG_DETAIL("  %s:\n", dxbc::FourCCToString(signature.fourCC).c_str());
         for (const auto& element : signature.elements) {
-            logging::Log("    %s%u: reg=%u mask=%s rw=0x%x sv=%u type=%u stream=%u\n",
+            LOG_DETAIL("    %s%u: reg=%u mask=%s rw=0x%x sv=%u type=%u stream=%u\n",
                          element.semanticName.c_str(),
                          element.semanticIndex,
                          element.registerIndex,
@@ -91,7 +91,13 @@ namespace {
         }
     }
 
+    // Writes the disassembly of a shader to %LOCALAPPDATA%\AMD-MVR-Adapter\shaders, in Debug builds only.
     void DumpDisassembly(const std::string& name, const void* bytecode, size_t length) {
+#ifndef _DEBUG
+        (void)name;
+        (void)bytecode;
+        (void)length;
+#else
         const std::wstring dataDirectory = logging::GetDataDirectory();
         if (dataDirectory.empty()) {
             return;
@@ -110,6 +116,7 @@ namespace {
             fwrite(disassembly->GetBufferPointer(), 1, disassembly->GetBufferSize(), file);
             fclose(file);
         }
+#endif
     }
 
     // The resource and sampler slots that AmdDxExtShaderIntrinsics_GetViewportIndex() samples from, and the
@@ -266,8 +273,16 @@ float4 main() : SV_Position {
     // Geometry shaders written for SPS/MVR output the positions of the views the same way, for each vertex they emit:
     // the same rewrite applies, with the selection done before each emit instead of before returning.
     //
-    // Returns false if the shader does not need patching, or cannot be patched.
-    bool PatchShader(dxbc::Container& container, NvU32 numCustomSemantics, const NV_CUSTOM_SEMANTIC* customSemantics) {
+    // Returns false if the shader does not need patching, or cannot be patched. In both cases, summary describes the
+    // outcome, for the log.
+    bool PatchShader(dxbc::Container& container,
+                     NvU32 numCustomSemantics,
+                     const NV_CUSTOM_SEMANTIC* customSemantics,
+                     std::string& summary) {
+        const auto notPatched = [&summary](const std::string& reason) {
+            summary = "not rewritten (" + reason + ")";
+            return false;
+        };
         using namespace dxbc;
 
         Chunk* outputChunk = nullptr;
@@ -284,12 +299,12 @@ float4 main() : SV_Position {
         Signature outputSignature;
         Program program;
         if (!outputChunk || !programChunk || !outputSignature.Parse(*outputChunk) || !program.Parse(*programChunk)) {
-            return false;
+            return notPatched("no output signature or program");
         }
 
         std::vector<ViewOutput> views = FindViewOutputs(outputSignature, numCustomSemantics, customSemantics);
         if (views.empty()) {
-            return false;
+            return notPatched("no view outputs");
         }
 
         const SignatureElement* positionElement = nullptr;
@@ -304,8 +319,7 @@ float4 main() : SV_Position {
             nextRegister = std::max(nextRegister, element.registerIndex + 1);
         }
         if (!positionElement) {
-            logging::Log("  Not patching: no SV_Position output\n");
-            return false;
+            return notPatched("no SV_Position output");
         }
         // A copy: we add elements to the signature below.
         const SignatureElement position = *positionElement;
@@ -321,13 +335,12 @@ float4 main() : SV_Position {
             program.MajorVersion() == 4 && (program.MinorVersion() == 0 || program.MinorVersion() == 1);
         const bool isShaderModel5 = program.MajorVersion() == 5 && program.MinorVersion() == 0;
         if ((program.ProgramType() != kProgramTypeVertex && !isGeometryShader) || !(isShaderModel4 || isShaderModel5)) {
-            logging::Log("  Not patching: only shader models 4.0, 4.1 and 5.0 of vertex and geometry shaders are supported\n");
-            return false;
+            return notPatched("only shader models 4.0, 4.1 and 5.0 of vertex and geometry shaders are supported");
         }
 
         const ViewportIndexIntrinsic& intrinsic = GetViewportIndexIntrinsic();
         if (!intrinsic.valid) {
-            return false;
+            return notPatched("the AMD intrinsic is unavailable");
         }
 
         // Scan the declarations: find the temp count, where to insert our declarations, and make sure the slots
@@ -345,13 +358,11 @@ float4 main() : SV_Position {
                     firstInstruction = i;
                 }
                 if (op == opcode::Call || op == opcode::CallC || op == opcode::Label || op == opcode::InterfaceCall) {
-                    logging::Log("  Not patching: subroutines are not supported\n");
-                    return false;
+                    return notPatched("subroutines are not supported");
                 }
                 // A vertex shader would skip our epilogue. In a geometry shader, it only ends the emission early.
                 if (op == opcode::RetC && !isGeometryShader) {
-                    logging::Log("  Not patching: conditional returns are not supported\n");
-                    return false;
+                    return notPatched("conditional returns are not supported");
                 }
                 continue;
             }
@@ -370,8 +381,7 @@ float4 main() : SV_Position {
                 const uint32_t slot = instruction.tokens.size() > 2 ? instruction.tokens[2] : 0;
                 if ((op == opcode::DclSampler && slot == kIntrinsicSamplerSlot) ||
                     (op != opcode::DclSampler && slot == kIntrinsicResourceSlot)) {
-                    logging::Log("  Not patching: the shader uses a slot reserved for the AMD intrinsics\n");
-                    return false;
+                    return notPatched("the shader uses a slot reserved for the AMD intrinsics");
                 }
                 break;
             }
@@ -388,7 +398,7 @@ float4 main() : SV_Position {
             }
         }
         if (firstInstruction == SIZE_MAX || lastOutputDeclaration == SIZE_MAX) {
-            return false;
+            return notPatched("no instructions or output declarations");
         }
 
         // A geometry shader can output at most 1024 scalars in total (over all its vertices), and we add one per
@@ -401,10 +411,12 @@ float4 main() : SV_Position {
                 }
             }
             if (outputScalars * maxOutputVertexCount > 1024) {
-                logging::Log("  Not patching: %u vertices of %u scalars exceed the geometry shader output limit\n",
-                             maxOutputVertexCount,
-                             outputScalars);
-                return false;
+                char reason[256];
+                sprintf_s(reason,
+                          "%u vertices of %u scalars exceed the geometry shader output limit",
+                          maxOutputVertexCount,
+                          outputScalars);
+                return notPatched(reason);
             }
         }
 
@@ -427,8 +439,7 @@ float4 main() : SV_Position {
                 continue;
             }
             if (!instruction.GetOperands(operands)) {
-                logging::Log("  Not patching: failed to decode opcode %u\n", instruction.Opcode());
-                return false;
+                return notPatched("failed to decode opcode " + std::to_string(instruction.Opcode()));
             }
             for (const auto& operand : operands) {
                 uint32_t& token = instruction.tokens[operand.token];
@@ -436,8 +447,7 @@ float4 main() : SV_Position {
                     continue;
                 }
                 if (OperandIndexDimension(token) != 1 || OperandIndexRepresentation(token, 0) != 0) {
-                    logging::Log("  Not patching: indexed output\n");
-                    return false;
+                    return notPatched("indexed output");
                 }
                 uint32_t& index = instruction.tokens[operand.firstIndex];
                 uint32_t temp = UINT32_MAX;
@@ -459,7 +469,7 @@ float4 main() : SV_Position {
         // Retarget the intrinsic's sample to our view index temp.
         Instruction sample = intrinsic.sample;
         if (!sample.GetOperands(operands) || operands.empty()) {
-            return false;
+            return notPatched("unexpected code for the AMD intrinsic");
         }
         sample.tokens[operands[0].token] = SetOperandType(sample.tokens[operands[0].token], operand_type::Temp);
         sample.tokens[operands[0].firstIndex] = viewIndexTemp;
@@ -551,17 +561,21 @@ float4 main() : SV_Position {
             outputSignature.elements.push_back(element);
         }
 
-        logging::Log("  Patched: position o%u -> r%u, view index in r%u", position.registerIndex, positionTemp, viewIndexTemp);
+        LOG_DETAIL("  Patched: position o%u -> r%u, view index in r%u", position.registerIndex, positionTemp, viewIndexTemp);
         if (!hasViewportIndex) {
-            logging::Log(" -> o%u", viewportRegister);
+            LOG_DETAIL(" -> o%u", viewportRegister);
         }
-        logging::Log("\n");
+        LOG_DETAIL("\n");
         for (const auto& view : views) {
-            logging::Log("    View %u: o%u%s -> r%u\n", view.view, view.registerIndex, view.xOnly ? " (x only)" : "", view.temp);
+            LOG_DETAIL("    View %u: o%u%s -> r%u\n", view.view, view.registerIndex, view.xOnly ? " (x only)" : "", view.temp);
         }
+        const bool xOnly = std::all_of(views.cbegin(), views.cend(), [](const ViewOutput& view) { return view.xOnly; });
+        summary = "rewritten (" + std::to_string(views.size()) + (views.size() == 1 ? " extra view" : " extra views") +
+                  (xOnly ? ", x only)" : ")");
 
         if (isShaderModel4) {
-            logging::Log("    Upgraded from %s_%u_%u to %s_5_0\n", stage, program.MajorVersion(), program.MinorVersion(), stage);
+            summary += ", upgraded from " + std::string(stage) + "_" + std::to_string(program.MajorVersion()) + "_" +
+                       std::to_string(program.MinorVersion());
             program.versionToken = (program.versionToken & ~0xffu) | (5u << 4);
             program.fourCC = MakeFourCC('S', 'H', 'E', 'X');
         }
@@ -592,16 +606,16 @@ namespace shaders {
         for (const auto& chunk : container.chunks) {
             chunkList += " " + dxbc::FourCCToString(chunk.fourCC);
         }
-        logging::Log("%s shader %s (%zu bytes):%s\n", stage, hash.c_str(), length, chunkList.c_str());
+        LOG_DETAIL("%s shader %s (%zu bytes):%s\n", stage, hash.c_str(), length, chunkList.c_str());
 
         for (NvU32 i = 0; i < numCustomSemantics; i++) {
             const NV_CUSTOM_SEMANTIC& semantic = customSemantics[i];
-            logging::Log("  Custom semantic: %s \"%s\"", CustomSemanticTypeName(semantic.NVCustomSemanticType),
-                         semantic.NVCustomSemanticNameString);
+            LOG_DETAIL("  Custom semantic: %s \"%s\"", CustomSemanticTypeName(semantic.NVCustomSemanticType),
+                       semantic.NVCustomSemanticNameString);
             if (semantic.RegisterSpecified) {
-                logging::Log(" (reg=%u mask=0x%x)", semantic.RegisterNum, semantic.RegisterMask);
+                LOG_DETAIL(" (reg=%u mask=0x%x)", semantic.RegisterNum, semantic.RegisterMask);
             }
-            logging::Log("\n");
+            LOG_DETAIL("\n");
         }
 
         // Parse and re-serialize every chunk we understand.
@@ -609,7 +623,7 @@ namespace shaders {
             if (dxbc::Signature::IsSignatureChunk(chunk.fourCC)) {
                 dxbc::Signature signature;
                 if (!signature.Parse(chunk)) {
-                    logging::Log("  Failed to parse the %s chunk\n", dxbc::FourCCToString(chunk.fourCC).c_str());
+                    logging::Log("%s shader %s: failed to parse the %s chunk\n", stage, hash.c_str(), dxbc::FourCCToString(chunk.fourCC).c_str());
                     return false;
                 }
                 LogSignature(signature);
@@ -617,14 +631,14 @@ namespace shaders {
             } else if (dxbc::Program::IsProgramChunk(chunk.fourCC)) {
                 dxbc::Program program;
                 if (!program.Parse(chunk)) {
-                    logging::Log("  Failed to parse the %s chunk\n", dxbc::FourCCToString(chunk.fourCC).c_str());
+                    logging::Log("%s shader %s: failed to parse the %s chunk\n", stage, hash.c_str(), dxbc::FourCCToString(chunk.fourCC).c_str());
                     return false;
                 }
-                logging::Log("  %s: shader model %u.%u, %zu instructions\n",
-                             dxbc::FourCCToString(chunk.fourCC).c_str(),
-                             program.MajorVersion(),
-                             program.MinorVersion(),
-                             program.instructions.size());
+                LOG_DETAIL("  %s: shader model %u.%u, %zu instructions\n",
+                           dxbc::FourCCToString(chunk.fourCC).c_str(),
+                           program.MajorVersion(),
+                           program.MinorVersion(),
+                           program.instructions.size());
                 chunk = program.Serialize();
             }
         }
@@ -654,11 +668,13 @@ namespace shaders {
 #endif
 
         // Fast geometry shaders are dropped (see NvAPI_D3D11_CreateGeometryShaderEx_2()).
+        std::string summary = strcmp(stage, "fastgs") == 0 ? "dropped (fast geometry shader)" : "passed through unchanged";
         if ((strcmp(stage, "vs") == 0 || strcmp(stage, "gs") == 0) &&
-            PatchShader(container, numCustomSemantics, customSemantics)) {
+            PatchShader(container, numCustomSemantics, customSemantics, summary)) {
             output = container.Serialize();
             DumpDisassembly(hash + "." + stage + ".patched", output.data(), output.size());
         }
+        logging::Log("%s shader %s: %s\n", stage, hash.c_str(), summary.c_str());
         return true;
     }
 

@@ -72,6 +72,8 @@ namespace {
     }
 
 #define LOG_CALL() logging::Log("--> %s\n", __func__)
+// For the functions called for every shader: ProcessShader() already logs one line per shader.
+#define LOG_CALL_DETAIL() LOG_DETAIL("--> %s\n", __func__)
 
     // Whether the device (or the device of the context) was created through AGS with multi-view.
     bool IsMultiViewAvailable(IUnknown* deviceOrContext, adapter::AgsDevice* agsDevice = nullptr) {
@@ -381,7 +383,7 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateVertexShaderEx(
     ID3D11ClassLinkage* pClassLinkage,
     const NvAPI_D3D11_CREATE_VERTEX_SHADER_EX* pCreateVertexShaderExArgs,
     ID3D11VertexShader** ppVertexShader) {
-    LOG_CALL();
+    LOG_CALL_DETAIL();
     if (!pDevice || !pCreateVertexShaderExArgs || !ppVertexShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
@@ -398,7 +400,7 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateHullShaderEx(ID3D11Device* pDevice,
                                                     ID3D11ClassLinkage* pClassLinkage,
                                                     const NvAPI_D3D11_CREATE_HULL_SHADER_EX* pCreateHullShaderExArgs,
                                                     ID3D11HullShader** ppHullShader) {
-    LOG_CALL();
+    LOG_CALL_DETAIL();
     if (!pDevice || !pCreateHullShaderExArgs || !ppHullShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
@@ -416,7 +418,7 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateDomainShaderEx(
     ID3D11ClassLinkage* pClassLinkage,
     const NvAPI_D3D11_CREATE_DOMAIN_SHADER_EX* pCreateDomainShaderExArgs,
     ID3D11DomainShader** ppDomainShader) {
-    LOG_CALL();
+    LOG_CALL_DETAIL();
     if (!pDevice || !pCreateDomainShaderExArgs || !ppDomainShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
@@ -434,16 +436,15 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreateGeometryShaderEx_2(
     ID3D11ClassLinkage* pClassLinkage,
     const NvAPI_D3D11_CREATE_GEOMETRY_SHADER_EX* pCreateGeometryShaderExArgs,
     ID3D11GeometryShader** ppGeometryShader) {
-    LOG_CALL();
+    LOG_CALL_DETAIL();
     if (!pDevice || !pCreateGeometryShaderExArgs || !ppGeometryShader) {
         return NVAPI_INVALID_ARGUMENT;
     }
     if (pCreateGeometryShaderExArgs->ForceFastGS) {
         std::vector<uint8_t> storage;
-        ProcessShader("fastgs", pShaderBytecode, BytecodeLength, pCreateGeometryShaderExArgs, storage);
         // A fast GS emits a single vertex per triangle with a viewport mask, which is only possible on NVIDIA
-        // hardware.
-        logging::Log("Dropping fast geometry shader\n");
+        // hardware. We drop it (ProcessShader() logs it). iRacing doesn't seem to use these anyway.
+        ProcessShader("fastgs", pShaderBytecode, BytecodeLength, pCreateGeometryShaderExArgs, storage);
         *ppGeometryShader = nullptr;
         return NVAPI_OK;
     }
@@ -472,7 +473,7 @@ NvAPI_Status __cdecl NvAPI_D3D11_CreatePixelShaderEx_2(
     ID3D11ClassLinkage* pClassLinkage,
     const NvAPI_D3D11_CREATE_PIXEL_SHADER_EX* pCreatePixelShaderExArgs,
     ID3D11PixelShader** ppPixelShader) {
-    LOG_CALL();
+    LOG_CALL_DETAIL();
     if (!pDevice || !pCreatePixelShaderExArgs || !ppPixelShader) {
         return NVAPI_INVALID_ARGUMENT;
     }

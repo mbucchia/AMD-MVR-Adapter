@@ -1,10 +1,12 @@
-# Single Pass Stereo (SPS) and Multi-View Rendering (MVR) for AMD
+# iRacing SPS, SMP and MVR for AMD
 
-A replacement `nvapi64.dll` that lets Direct3D 11 applications written for NVIDIA Single Pass Stereo (SPS) and Multi-View Rendering (MVR) run on AMD GPUs, using AMD's view broadcasting through the AMD GPU Services (AGS) library. Applications do not need to be recompiled. **The primary target is iRacing in VR** (but someone could expand it to work with other games).
+**Enables use of Single Pass Stereo (SPS), Simultaneous Multi-Projection (SMP), and Multi-View Rendering (MVR) / Foveated Rendering on AMD GPUs in iRacing. Improves performance both in VR and Triple Screens mode.**
+
+A replacement `nvapi64.dll` that lets Direct3D 11 applications written for NVIDIA Single Pass Stereo (SPS), Simultaneous Multi-Projection (SMP), and Multi-View Rendering (MVR) run on AMD GPUs, using AMD's view broadcasting through the AMD GPU Services (AGS) library. Applications do not need to be recompiled. While the primary target is iRacing, it could be expanded to work with other games.
 
 I coined this idea in April 2024 in an [iRacing forum post](https://forums.iracing.com/discussion/comment/522573/#Comment_522573), but never had the time to push it through. With the help of Claude AI, something that was weeks of coding before, is now possible in a much shorter amount of time.
 
-DISCLAIMER: This software is distributed as-is, without any warranties or conditions of any kind. Use at your own risks.
+DISCLAIMER: This software is distributed as-is, without any warranties or conditions of any kind. Use at your own risk.
 
 ## Installing
 
@@ -12,17 +14,13 @@ See the [Release page](https://github.com/mbucchia/AMD-MVR-Adapter/releases/late
 
 Extract `dxgi.dll` and `nvapi64.dll` into the game's installation folder. The extracted files should appear next to iRacing's `iRacingSim64DX11.exe`. **You can remove the mod later by deleting these two files.**
 
-**You will still need to enable SPS or MVR foveated rendering in iRacing's display settings.**
+**VR**
 
-Go to 'Settings' > 'Display' > 'VR' and change 'VR Mode'.
+Go to 'Settings' > 'Display' > 'VR' and change 'VR Mode'. Enable either Single Pass Stereo or Foveated Rendering. This requires restarting the session.
 
-In my testing, this required restarting the session.
+**Triple Screens**
 
-### Triple screens
-
-The same mod also enables iRacing's **Simultaneous Multi-Projection** (SMP) for triple screens, which renders the 3 projections with multi-view instead of 3 separate passes. This reduces CPU usage, which is usually the bottleneck with 3 projections.
-
-Go to 'Settings' > 'Display', turn on 'Render Scene Using 3 Projections', then 'Nvidia Simultaneous Multi-Projection'. This also requires restarting the session.
+Go to 'Settings' > 'Display', turn on 'Render Scene Using 3 Projections', then 'Nvidia Simultaneous Multi-Projection'. This requires restarting the session.
 
 ## Troubleshooting
 
@@ -63,3 +61,7 @@ These do not seem to apply to iRacing, but may apply to other games if you try p
 - One render target slice per view cannot be expressed: AGS replicates draws to every combination of viewport and slice in its masks.
 - The per-view viewport masks output by the shaders are not honored: view N always goes to viewport N. When independent viewport masks are enabled, a view whose viewport and render target slice duplicate those of an earlier view is left out, as a heuristic based on the viewports bound when multi-view is enabled: iRacing disables the 4th view of its triple screen SMP in its shaders, and sets its viewport to a copy of the 3rd one before enabling multi-view.
 - View broadcasting is applied to the immediate context of the device passed by the application, even when it passes a deferred context.
+
+## Special Thanks
+
+- @nishizumi-maho: Adding support for Simultaneous Multi-Projection (SMP) with iRacing.

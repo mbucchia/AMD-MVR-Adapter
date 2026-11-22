@@ -87,12 +87,63 @@ namespace {
         return true;
     }
 
+    // The viewports bound to the context, or to the immediate context of the device.
+    std::vector<D3D11_VIEWPORT> GetViewports(IUnknown* deviceOrContext) {
+        Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+        if (FAILED(deviceOrContext->QueryInterface(IID_PPV_ARGS(&context)))) {
+            Microsoft::WRL::ComPtr<ID3D11Device> device;
+            if (FAILED(deviceOrContext->QueryInterface(IID_PPV_ARGS(&device)))) {
+                return {};
+            }
+            device->GetImmediateContext(&context);
+        }
+        UINT count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+        std::vector<D3D11_VIEWPORT> viewports(count);
+        context->RSGetViewports(&count, viewports.data());
+        viewports.resize(count);
+        return viewports;
+    }
+
+    // With independent viewport masks, the shaders decide which views are actually rendered, and the CPU side cannot
+    // see it. iRacing requests 4 views for 3 projections, disables the 4th one in its shaders, and sets its viewport to
+    // a copy of the 3rd one. AGS would still run the vertex shaders for it. As a heuristic, leave out of vpMask a view
+    // whose viewport and render target slice duplicate those of an earlier view.
+    //
+    // This relies on the viewports being set before multi-view is enabled, which iRacing does.
+    unsigned long long LeaveOutDuplicatedViews(IUnknown* deviceOrContext,
+                                               NvU32 numViews,
+                                               const NvU32* renderTargetIndexOffset,
+                                               unsigned long long vpMask) {
+        const std::vector<D3D11_VIEWPORT> viewports = GetViewports(deviceOrContext);
+        if (viewports.size() < numViews) {
+            return vpMask;
+        }
+
+        const auto sameViewport = [](const D3D11_VIEWPORT& a, const D3D11_VIEWPORT& b) {
+            return a.TopLeftX == b.TopLeftX && a.TopLeftY == b.TopLeftY && a.Width == b.Width &&
+                   a.Height == b.Height && a.MinDepth == b.MinDepth && a.MaxDepth == b.MaxDepth;
+        };
+        for (NvU32 i = 1; i < numViews; i++) {
+            for (NvU32 j = 0; j < i; j++) {
+                if (sameViewport(viewports[i], viewports[j]) &&
+                    renderTargetIndexOffset[i] == renderTargetIndexOffset[j]) {
+                    vpMask &= ~(1ull << i);
+                    break;
+                }
+            }
+        }
+        return vpMask;
+    }
+
     // Translate NVIDIA's multi-view/single-pass stereo state into AGS view broadcasting.
     //
     // With NVIDIA, view N is routed by the viewport mask output by the (fast) geometry shader. For planar projection,
     // view N goes to viewport N. With AGS, the draw is replicated to every viewport set in vpMask, and the shaders
     // can query which viewport they are running for with AmdDxExtShaderIntrinsics_GetViewportIndex().
-    NvAPI_Status SetViewBroadcast(IUnknown* deviceOrContext, NvU32 numViews, const NvU32* renderTargetIndexOffset) {
+    NvAPI_Status SetViewBroadcast(IUnknown* deviceOrContext,
+                                  NvU32 numViews,
+                                  const NvU32* renderTargetIndexOffset,
+                                  bool independentViewportMasks) {
         auto& state = adapter::GetState();
         adapter::AgsDevice agsDevice;
         if (!IsMultiViewAvailable(deviceOrContext, &agsDevice)) {
@@ -120,6 +171,9 @@ namespace {
             // additional logic.
             if (__popcnt64(rtSliceMask) > 1) {
                 logging::Log("Rendering views to different render target slices is not supported\n");
+            }
+            if (independentViewportMasks) {
+                vpMask = LeaveOutDuplicatedViews(deviceOrContext, numViews, renderTargetIndexOffset, vpMask);
             }
         }
 
@@ -340,8 +394,12 @@ NvAPI_Status __cdecl NvAPI_D3D_SetMultiViewMode(IUnknown* pDevOrContext, NV_MULT
     if (pMultiViewParams->version != NV_MULTIVIEW_PARAMS_VER1) {
         return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
     }
-    // TODO: independentViewportMaskEnable is ignored: views always go to viewport 0..numViews-1.
-    return SetViewBroadcast(pDevOrContext, pMultiViewParams->numViews, pMultiViewParams->renderTargetIndexOffset);
+    // TODO: The per-view viewport masks are not honored: views always go to viewport 0..numViews-1. When they are
+    // enabled, only views with a duplicated viewport are left out (see LeaveOutDuplicatedViews()).
+    return SetViewBroadcast(pDevOrContext,
+                            pMultiViewParams->numViews,
+                            pMultiViewParams->renderTargetIndexOffset,
+                            pMultiViewParams->independentViewportMaskEnable != 0);
 }
 
 NvAPI_Status __cdecl NvAPI_D3D_SetModifiedWMode(IUnknown* pDevOrContext, NV_MODIFIED_W_PARAMS* psModifiedWParams) {
@@ -385,7 +443,8 @@ NvAPI_Status __cdecl NvAPI_D3D_SetSinglePassStereoMode(IUnknown* pDevOrContext,
         return NVAPI_INVALID_ARGUMENT;
     }
     const NvU32 offsets[2] = {0, renderTargetIndexOffset};
-    return SetViewBroadcast(pDevOrContext, numViews, offsets);
+    // Single pass stereo is left unchanged: no views are left out.
+    return SetViewBroadcast(pDevOrContext, numViews, offsets, false);
 }
 
 // Patch the shader bytecode to translate necessary constructs from NVIDIA SPS/MVR to AMD AGS.

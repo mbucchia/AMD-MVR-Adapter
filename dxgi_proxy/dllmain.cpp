@@ -26,6 +26,8 @@
 #include <cstdio>
 #include <string>
 
+#include "version.gen.h"
+
 // The functions the stubs of exports.asm jump to, in the order of kExportNames. Defined in exports.asm, where each
 // entry initially points to a resolver that calls ResolveExport().
 constexpr size_t kExportCount = 20;
@@ -183,7 +185,7 @@ extern "C" __declspec(safebuffers) void* ResolveExport(unsigned int index) {
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(module);
-        Log("dxgi_proxy: loaded into %ls\n", GetModulePath(nullptr).c_str());
+        Log("dxgi_proxy %s (%s): loaded into %ls\n", VERSION_STRING, VERSION_COMMIT, GetModulePath(nullptr).c_str());
 
         // Loaded from DllMain(), which is normally discouraged, but this is the only way to run before the
         // application's code. Its DllMain() does not wait on other threads.

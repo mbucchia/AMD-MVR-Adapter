@@ -24,6 +24,7 @@
 
 #include "adapter.h"
 #include "log.h"
+#include "version.gen.h"
 
 namespace adapter {
 
@@ -46,7 +47,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         {
             char executable[MAX_PATH] = "?";
             GetModuleFileNameA(nullptr, executable, MAX_PATH);
-            logging::Log("AMD-MVR-Adapter loaded into %s (process %lu)\n", executable, GetCurrentProcessId());
+            logging::Log("AMD-MVR-Adapter %s (%s) loaded into %s (process %lu)\n",
+                         VERSION_STRING,
+                         VERSION_COMMIT,
+                         executable,
+                         GetCurrentProcessId());
         }
         adapter::InstallHooks();
         break;

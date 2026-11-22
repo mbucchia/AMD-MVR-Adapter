@@ -88,6 +88,9 @@ namespace dxbc {
     namespace opcode {
         constexpr uint32_t Call = 4;
         constexpr uint32_t CallC = 5;
+        constexpr uint32_t Cut = 9;
+        constexpr uint32_t Emit = 19;
+        constexpr uint32_t EmitThenCut = 20;
         constexpr uint32_t Ieq = 32;
         constexpr uint32_t Label = 44;
         constexpr uint32_t CustomData = 53;
@@ -98,12 +101,16 @@ namespace dxbc {
         constexpr uint32_t SampleL = 72;
         constexpr uint32_t DclResource = 88;
         constexpr uint32_t DclSampler = 90;
+        constexpr uint32_t DclMaxOutputVertexCount = 94;
         constexpr uint32_t DclInput = 95;
         constexpr uint32_t DclOutput = 101;
         constexpr uint32_t DclOutputSgv = 102;
         constexpr uint32_t DclOutputSiv = 103;
         constexpr uint32_t DclTemps = 104;
         constexpr uint32_t DclGlobalFlags = 106;
+        constexpr uint32_t EmitStream = 117;
+        constexpr uint32_t CutStream = 118;
+        constexpr uint32_t EmitThenCutStream = 119;
         constexpr uint32_t InterfaceCall = 120;
         constexpr uint32_t DclResourceRaw = 161;
         constexpr uint32_t DclResourceStructured = 162;

@@ -263,10 +263,11 @@ float4 main() : SV_Position {
     // written to SV_ViewportArrayIndex, which the pixel shaders of such applications read (normally written by the
     // NVIDIA fast geometry shader, that we drop).
     //
+    // Geometry shaders written for SPS/MVR output the positions of the views the same way, for each vertex they emit:
+    // the same rewrite applies, with the selection done before each emit instead of before returning.
+    //
     // Returns false if the shader does not need patching, or cannot be patched.
-    bool PatchVertexShader(dxbc::Container& container,
-                           NvU32 numCustomSemantics,
-                           const NV_CUSTOM_SEMANTIC* customSemantics) {
+    bool PatchShader(dxbc::Container& container, NvU32 numCustomSemantics, const NV_CUSTOM_SEMANTIC* customSemantics) {
         using namespace dxbc;
 
         Chunk* outputChunk = nullptr;
@@ -308,8 +309,19 @@ float4 main() : SV_Position {
         }
         // A copy: we add elements to the signature below.
         const SignatureElement position = *positionElement;
-        if (program.ProgramType() != 1 || program.MajorVersion() != 5 || program.MinorVersion() != 0) {
-            logging::Log("  Not patching: only vs_5_0 is supported\n");
+        // Shader model 4 cannot output SV_ViewportArrayIndex from a vertex shader, so we upgrade shader model 4.0 and
+        // 4.1 to 5.0, which is a superset of them (same instructions and encodings). The SHDR chunk becomes SHEX, as
+        // with fxc. Geometry shaders are upgraded the same way, so that the AMD intrinsic is always used from shader
+        // model 5.0.
+        constexpr uint32_t kProgramTypeVertex = 1;
+        constexpr uint32_t kProgramTypeGeometry = 2;
+        const bool isGeometryShader = program.ProgramType() == kProgramTypeGeometry;
+        const char* const stage = isGeometryShader ? "gs" : "vs";
+        const bool isShaderModel4 =
+            program.MajorVersion() == 4 && (program.MinorVersion() == 0 || program.MinorVersion() == 1);
+        const bool isShaderModel5 = program.MajorVersion() == 5 && program.MinorVersion() == 0;
+        if ((program.ProgramType() != kProgramTypeVertex && !isGeometryShader) || !(isShaderModel4 || isShaderModel5)) {
+            logging::Log("  Not patching: only shader models 4.0, 4.1 and 5.0 of vertex and geometry shaders are supported\n");
             return false;
         }
 
@@ -324,6 +336,7 @@ float4 main() : SV_Position {
         size_t firstInputOutputDeclaration = SIZE_MAX;
         size_t lastOutputDeclaration = SIZE_MAX;
         size_t firstInstruction = SIZE_MAX;
+        uint32_t maxOutputVertexCount = 0;
         for (size_t i = 0; i < program.instructions.size(); i++) {
             const Instruction& instruction = program.instructions[i];
             const uint32_t op = instruction.Opcode();
@@ -331,9 +344,13 @@ float4 main() : SV_Position {
                 if (firstInstruction == SIZE_MAX) {
                     firstInstruction = i;
                 }
-                if (op == opcode::Call || op == opcode::CallC || op == opcode::Label || op == opcode::RetC ||
-                    op == opcode::InterfaceCall) {
-                    logging::Log("  Not patching: subroutines and conditional returns are not supported\n");
+                if (op == opcode::Call || op == opcode::CallC || op == opcode::Label || op == opcode::InterfaceCall) {
+                    logging::Log("  Not patching: subroutines are not supported\n");
+                    return false;
+                }
+                // A vertex shader would skip our epilogue. In a geometry shader, it only ends the emission early.
+                if (op == opcode::RetC && !isGeometryShader) {
+                    logging::Log("  Not patching: conditional returns are not supported\n");
                     return false;
                 }
                 continue;
@@ -342,6 +359,9 @@ float4 main() : SV_Position {
             switch (op) {
             case opcode::DclTemps:
                 dclTemps = i;
+                break;
+            case opcode::DclMaxOutputVertexCount:
+                maxOutputVertexCount = instruction.tokens.size() > 1 ? instruction.tokens[1] : 0;
                 break;
             case opcode::DclSampler:
             case opcode::DclResource:
@@ -371,14 +391,34 @@ float4 main() : SV_Position {
             return false;
         }
 
-        // Allocate our temps after the shader's: the position, one per view, and one for the view index.
+        // A geometry shader can output at most 1024 scalars in total (over all its vertices), and we add one per
+        // vertex (SV_ViewportArrayIndex).
+        if (isGeometryShader && !hasViewportIndex) {
+            uint32_t outputScalars = 1;
+            for (const auto& element : outputSignature.elements) {
+                if (element.stream == position.stream) {
+                    outputScalars += __popcnt(element.mask);
+                }
+            }
+            if (outputScalars * maxOutputVertexCount > 1024) {
+                logging::Log("  Not patching: %u vertices of %u scalars exceed the geometry shader output limit\n",
+                             maxOutputVertexCount,
+                             outputScalars);
+                return false;
+            }
+        }
+
+        // Allocate our temps after the shader's: the position, one per view, one for the view index, and one for the
+        // position of the current view. The latter is separate from the position temp, so that the selection does not
+        // change what the shader wrote (a geometry shader runs the selection for each vertex).
         const uint32_t tempBase = dclTemps != SIZE_MAX ? program.instructions[dclTemps].tokens[1] : 0;
         const uint32_t positionTemp = tempBase;
         for (size_t i = 0; i < views.size(); i++) {
             views[i].temp = tempBase + 1 + uint32_t(i);
         }
         const uint32_t viewIndexTemp = tempBase + 1 + uint32_t(views.size());
-        const uint32_t tempCount = viewIndexTemp + 1;
+        const uint32_t selectedPositionTemp = viewIndexTemp + 1;
+        const uint32_t tempCount = selectedPositionTemp + 1;
 
         // Redirect the writes to the position outputs to our temps (outputs cannot be read back).
         std::vector<OperandLocation> operands;
@@ -424,27 +464,31 @@ float4 main() : SV_Position {
         sample.tokens[operands[0].token] = SetOperandType(sample.tokens[operands[0].token], operand_type::Temp);
         sample.tokens[operands[0].firstIndex] = viewIndexTemp;
 
-        // The epilogue, run before each return:
+        // The epilogue, run before each return (vertex shader) or each emit (geometry shader):
         //   r_view = AmdDxExtShaderIntrinsics_GetViewportIndex()
-        //   for each view N: r_position = (r_view.x == N) ? r_N : r_position   (only .x for NV_X_RIGHT)
-        //   o_position = r_position, o_N = r_N, o_viewport = r_view.x
+        //   r_selected = r_position
+        //   for each view N: r_selected = (r_view.x == N) ? r_N : r_selected   (only .x for NV_X_RIGHT)
+        //   o_position = r_selected, o_N = r_N, o_viewport = r_view.x
         const uint8_t viewportRegister = uint8_t(nextRegister);
         std::vector<Instruction> epilogue;
         epilogue.push_back(sample);
+        epilogue.push_back(Instruction::Make(opcode::Mov,
+                                             {DestinationOperand(operand_type::Temp, selectedPositionTemp, 0xf),
+                                              SourceOperand(operand_type::Temp, positionTemp, kSwizzleXYZW)}));
         for (const auto& view : views) {
             epilogue.push_back(Instruction::Make(opcode::Ieq,
                                                  {DestinationOperand(operand_type::Temp, viewIndexTemp, 0x2),
                                                   SourceOperand(operand_type::Temp, viewIndexTemp, Swizzle(0, 0, 0, 0)),
                                                   ImmediateOperand(view.view)}));
             epilogue.push_back(Instruction::Make(opcode::Movc,
-                                                 {DestinationOperand(operand_type::Temp, positionTemp, view.xOnly ? 0x1 : 0xf),
+                                                 {DestinationOperand(operand_type::Temp, selectedPositionTemp, view.xOnly ? 0x1 : 0xf),
                                                   SourceOperand(operand_type::Temp, viewIndexTemp, Swizzle(1, 1, 1, 1)),
                                                   SourceOperand(operand_type::Temp, view.temp, kSwizzleXYZW),
-                                                  SourceOperand(operand_type::Temp, positionTemp, kSwizzleXYZW)}));
+                                                  SourceOperand(operand_type::Temp, selectedPositionTemp, kSwizzleXYZW)}));
         }
         epilogue.push_back(Instruction::Make(opcode::Mov,
                                              {DestinationOperand(operand_type::Output, position.registerIndex, position.mask),
-                                              SourceOperand(operand_type::Temp, positionTemp, kSwizzleXYZW)}));
+                                              SourceOperand(operand_type::Temp, selectedPositionTemp, kSwizzleXYZW)}));
         for (const auto& view : views) {
             epilogue.push_back(Instruction::Make(opcode::Mov,
                                                  {DestinationOperand(operand_type::Output, view.registerIndex, view.mask),
@@ -470,7 +514,10 @@ float4 main() : SV_Position {
                 declaration.tokens = {opcode::DclTemps | (2u << 24), tempCount};
                 instructions.push_back(declaration);
             }
-            if (instruction.Opcode() == opcode::Ret) {
+            const uint32_t op = instruction.Opcode();
+            const bool isEmit = op == opcode::Emit || op == opcode::EmitThenCut || op == opcode::EmitStream ||
+                                op == opcode::EmitThenCutStream;
+            if (isGeometryShader ? isEmit : op == opcode::Ret) {
                 instructions.insert(instructions.end(), epilogue.begin(), epilogue.end());
             }
 
@@ -513,6 +560,11 @@ float4 main() : SV_Position {
             logging::Log("    View %u: o%u%s -> r%u\n", view.view, view.registerIndex, view.xOnly ? " (x only)" : "", view.temp);
         }
 
+        if (isShaderModel4) {
+            logging::Log("    Upgraded from %s_%u_%u to %s_5_0\n", stage, program.MajorVersion(), program.MinorVersion(), stage);
+            program.versionToken = (program.versionToken & ~0xffu) | (5u << 4);
+            program.fourCC = MakeFourCC('S', 'H', 'E', 'X');
+        }
         *programChunk = program.Serialize();
         *outputChunk = outputSignature.Serialize();
         return true;
@@ -601,7 +653,9 @@ namespace shaders {
         }
 #endif
 
-        if (strcmp(stage, "vs") == 0 && PatchVertexShader(container, numCustomSemantics, customSemantics)) {
+        // Fast geometry shaders are dropped (see NvAPI_D3D11_CreateGeometryShaderEx_2()).
+        if ((strcmp(stage, "vs") == 0 || strcmp(stage, "gs") == 0) &&
+            PatchShader(container, numCustomSemantics, customSemantics)) {
             output = container.Serialize();
             DumpDisassembly(hash + "." + stage + ".patched", output.data(), output.size());
         }

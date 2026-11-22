@@ -467,28 +467,40 @@ namespace {
 
 namespace adapter {
 
-    bool FindAgsDevice(IUnknown* deviceOrContext, AgsDevice& agsDevice) {
+    AgsDevice* FindAgsDevice(IUnknown* deviceOrContext) {
         if (!deviceOrContext) {
-            return false;
+            return nullptr;
         }
 
         Microsoft::WRL::ComPtr<ID3D11Device> device;
         if (FAILED(deviceOrContext->QueryInterface(IID_PPV_ARGS(&device)))) {
             Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
             if (FAILED(deviceOrContext->QueryInterface(IID_PPV_ARGS(&context)))) {
-                return false;
+                return nullptr;
             }
             context->GetDevice(&device);
+        }
+
+        // The application sets the view broadcast state many times per frame, on the render thread, always on the
+        // same device: remember the last device found on this thread, to skip the lock and the lookup. Devices created
+        // through AGS are never destroyed (AGS holds a reference, see State::agsDevices), so the address of a cached
+        // device cannot be reused by another one.
+        thread_local ID3D11Device* t_lastDevice = nullptr;
+        thread_local AgsDevice* t_lastAgsDevice = nullptr;
+        if (device.Get() == t_lastDevice) {
+            return t_lastAgsDevice;
         }
 
         auto& state = GetState();
         std::lock_guard lock(state.agsDevicesMutex);
         const auto it = state.agsDevices.find(device.Get());
         if (it == state.agsDevices.end()) {
-            return false;
+            return nullptr;
         }
-        agsDevice = it->second;
-        return true;
+        // The elements of an unordered_map are not moved by later insertions.
+        t_lastDevice = device.Get();
+        t_lastAgsDevice = &it->second;
+        return t_lastAgsDevice;
     }
 
     void InstallHooks() {

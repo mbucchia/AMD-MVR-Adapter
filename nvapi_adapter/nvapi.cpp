@@ -75,16 +75,36 @@ namespace {
 // For the functions called for every shader: ProcessShader() already logs one line per shader.
 #define LOG_CALL_DETAIL() LOG_DETAIL("--> %s\n", __func__)
 
-    // Whether the device (or the device of the context) was created through AGS with multi-view.
-    bool IsMultiViewAvailable(IUnknown* deviceOrContext, adapter::AgsDevice* agsDevice = nullptr) {
-        adapter::AgsDevice device;
-        if (!adapter::FindAgsDevice(deviceOrContext, device) || !device.extensions.multiView) {
-            return false;
+    // The AGS device of the device (or of the device of the context), if it was created through AGS with multi-view.
+    adapter::AgsDevice* FindMultiViewDevice(IUnknown* deviceOrContext) {
+        adapter::AgsDevice* device = adapter::FindAgsDevice(deviceOrContext);
+        return device && device->extensions.multiView ? device : nullptr;
+    }
+
+    bool IsMultiViewAvailable(IUnknown* deviceOrContext) {
+        return FindMultiViewDevice(deviceOrContext) != nullptr;
+    }
+
+    // Counts the view broadcast calls, and logs once a minute how many of them reached the driver.
+    void CountViewBroadcastCall(bool skipped) {
+        static std::atomic<uint64_t> calls{0};
+        static std::atomic<uint64_t> skippedCalls{0};
+        static std::atomic<ULONGLONG> periodStart{GetTickCount64()};
+        calls.fetch_add(1, std::memory_order_relaxed);
+        if (skipped) {
+            skippedCalls.fetch_add(1, std::memory_order_relaxed);
         }
-        if (agsDevice) {
-            *agsDevice = device;
+
+        const ULONGLONG now = GetTickCount64();
+        ULONGLONG start = periodStart.load(std::memory_order_relaxed);
+        if (now - start >= 60000 && periodStart.compare_exchange_strong(start, now)) {
+            const uint64_t total = calls.exchange(0);
+            const uint64_t skippedTotal = skippedCalls.exchange(0);
+            logging::Log("View broadcast: %llu calls in the last %llu s, %llu skipped (masks unchanged)\n",
+                         total,
+                         (now - start) / 1000,
+                         skippedTotal);
         }
-        return true;
     }
 
     // Translate NVIDIA's multi-view/single-pass stereo state into AGS view broadcasting.
@@ -94,8 +114,8 @@ namespace {
     // can query which viewport they are running for with AmdDxExtShaderIntrinsics_GetViewportIndex().
     NvAPI_Status SetViewBroadcast(IUnknown* deviceOrContext, NvU32 numViews, const NvU32* renderTargetIndexOffset) {
         auto& state = adapter::GetState();
-        adapter::AgsDevice agsDevice;
-        if (!IsMultiViewAvailable(deviceOrContext, &agsDevice)) {
+        adapter::AgsDevice* const agsDevice = FindMultiViewDevice(deviceOrContext);
+        if (!agsDevice) {
             static bool logged = false;
             if (!logged) {
                 logging::Log("View broadcasting requested on %p, which was not created through AGS with multi-view\n",
@@ -119,9 +139,21 @@ namespace {
             // TODO: AGS replicates to every (viewport, slice) combination. Supporting one slice per view would require
             // additional logic.
             if (__popcnt64(rtSliceMask) > 1) {
-                logging::Log("Rendering views to different render target slices is not supported\n");
+                // This would otherwise be logged on every call, which happens many times per frame.
+                static bool logged = false;
+                if (!logged) {
+                    logging::Log("Rendering views to different render target slices is not supported\n");
+                    logged = true;
+                }
             }
         }
+
+        // The application sets the same masks many times per frame: only call the driver when they change.
+        if (agsDevice->viewBroadcastMasksValid && agsDevice->vpMask == vpMask && agsDevice->rtSliceMask == rtSliceMask) {
+            CountViewBroadcastCall(true);
+            return NVAPI_OK;
+        }
+        CountViewBroadcastCall(false);
 
         // The application toggles the same states every frame: only log each one the first time.
         if (vpMask && (vpMask != state.vpMask || rtSliceMask != state.rtSliceMask)) {
@@ -133,11 +165,15 @@ namespace {
         // TODO: This applies to the immediate context of the device, even when the application passes a deferred
         // context.
         const AGSReturnCode result =
-            agsDriverExtensionsDX11_SetViewBroadcastMasks(agsDevice.context, vpMask, rtSliceMask, 0);
+            agsDriverExtensionsDX11_SetViewBroadcastMasks(agsDevice->context, vpMask, rtSliceMask, 0);
         if (result != AGS_SUCCESS) {
             logging::Log("agsDriverExtensionsDX11_SetViewBroadcastMasks() failed: %d\n", result);
+            agsDevice->viewBroadcastMasksValid = false;
             return NVAPI_ERROR;
         }
+        agsDevice->viewBroadcastMasksValid = true;
+        agsDevice->vpMask = vpMask;
+        agsDevice->rtSliceMask = rtSliceMask;
         return NVAPI_OK;
     }
 

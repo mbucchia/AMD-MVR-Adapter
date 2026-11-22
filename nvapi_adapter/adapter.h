@@ -27,6 +27,13 @@ namespace adapter {
     struct AgsDevice {
         AGSContext* context = nullptr;
         AGSDX11ExtensionsSupported extensions{};
+
+        // The view broadcast masks last set on the immediate context, to skip the driver call when the application
+        // sets the same masks again (it does so many times per frame). Only used from the thread that uses the
+        // immediate context, since D3D11 requires the application to serialize its use.
+        bool viewBroadcastMasksValid = false;
+        unsigned long long vpMask = 0;
+        unsigned long long rtSliceMask = 0;
     };
 
     // Global state shared between the D3D11 hooks and the NVAPI implementation.
@@ -49,7 +56,9 @@ namespace adapter {
 
     State& GetState();
 
-    bool FindAgsDevice(IUnknown* deviceOrContext, AgsDevice& agsDevice);
+    // The AGS device of a device or context, or nullptr. Entries are never removed from State::agsDevices, so the
+    // pointer remains valid for the lifetime of the process.
+    AgsDevice* FindAgsDevice(IUnknown* deviceOrContext);
 
     void InstallHooks();
     void UninstallHooks();

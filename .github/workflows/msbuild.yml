@@ -1,0 +1,63 @@
+name: MSBuild
+
+on:
+  push:
+    branches:
+    - main
+    - release/*
+    tags:
+    - '[0-9]+.[0-9]+.[0-9]+'
+  pull_request:
+    branches:
+    - main
+    - release/*
+  workflow_dispatch:
+
+env:
+  SOLUTION_FILE_PATH: AMD-MVR-Adapter.sln
+  BUILD_CONFIGURATION: Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+
+    - name: Checkout submodules
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: git submodule update --init
+
+    - name: Setup DevEnv
+      uses: seanmiddleditch/gha-setup-vsdevenv@v4
+
+    - name: Restore NuGet packages
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: nuget restore ${{env.SOLUTION_FILE_PATH}}
+
+    - name: Build
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: |
+        msbuild ${{env.SOLUTION_FILE_PATH}} /m /p:Configuration=${{env.BUILD_CONFIGURATION}} /p:Platform=x64
+
+        copy README.md bin\${{env.BUILD_CONFIGURATION}}\
+        copy LICENSE bin\${{env.BUILD_CONFIGURATION}}\
+
+    - name: Publish
+      uses: actions/upload-artifact@v4
+      with:
+        name: AMD-MVR-Adapter
+        path: |
+          bin/${{env.BUILD_CONFIGURATION}}/dxgi.dll
+          bin/${{env.BUILD_CONFIGURATION}}/nvapi64.dll
+          bin/${{env.BUILD_CONFIGURATION}}/README.md
+          bin/${{env.BUILD_CONFIGURATION}}/LICENSE
+
+    - name: Publish symbols
+      uses: actions/upload-artifact@v4
+      with:
+        name: AMD-MVR-Adapter-Symbols
+        path: |
+          bin/${{env.BUILD_CONFIGURATION}}/dxgi.pdb
+          bin/${{env.BUILD_CONFIGURATION}}/nvapi64.pdb

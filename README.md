@@ -18,7 +18,7 @@ Go to 'Settings' > 'Display' > 'VR' and change 'VR Mode'.
 
 In my testing, this required restarting the session.
 
-# Troubleshooting
+## Troubleshooting
 
 There are log files under `C:\Users\<username>\AppData\Local\AMD-MVR-Adapter`. If this folder is not created or is empty, then it means the installation above failed.
 

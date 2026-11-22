@@ -22,9 +22,14 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winternl.h>
+#include <d3dkmthk.h>
 
 #include <cstdio>
 #include <string>
+#include <vector>
+
+#pragma comment(lib, "gdi32.lib")
 
 #include "version.gen.h"
 
@@ -133,6 +138,49 @@ namespace {
     }
 
     // What a stub calls when the system dxgi.dll does not have the function (or could not be loaded yet).
+    // Whether the system has an AMD GPU, through the D3D kernel thunks (gdi32.dll, a static import, so initialized
+    // before our DllMain()): DXGI cannot be used from DllMain().
+    enum class AmdGpu { Present, Absent, Unknown };
+    AmdGpu DetectAmdGpu() {
+        constexpr UINT kVendorIdAmd = 0x1002;
+
+        D3DKMT_ENUMADAPTERS2 enumAdapters{};
+        if (!NT_SUCCESS(D3DKMTEnumAdapters2(&enumAdapters))) {
+            return AmdGpu::Unknown;
+        }
+        std::vector<D3DKMT_ADAPTERINFO> adapters(enumAdapters.NumAdapters);
+        enumAdapters.pAdapters = adapters.data();
+        if (!NT_SUCCESS(D3DKMTEnumAdapters2(&enumAdapters))) {
+            return AmdGpu::Unknown;
+        }
+        adapters.resize(enumAdapters.NumAdapters);
+
+        AmdGpu result = AmdGpu::Absent;
+        for (const auto& adapter : adapters) {
+            D3DKMT_QUERY_DEVICE_IDS deviceIds{};
+            deviceIds.PhysicalAdapterIndex = 0;
+            D3DKMT_QUERYADAPTERINFO query{};
+            query.hAdapter = adapter.hAdapter;
+            query.Type = KMTQAITYPE_PHYSICALADAPTERDEVICEIDS;
+            query.pPrivateDriverData = &deviceIds;
+            query.PrivateDriverDataSize = sizeof(deviceIds);
+            if (NT_SUCCESS(D3DKMTQueryAdapterInfo(&query)) && deviceIds.DeviceIds.VendorID == kVendorIdAmd) {
+                result = AmdGpu::Present;
+            }
+            D3DKMT_CLOSEADAPTER close{};
+            close.hAdapter = adapter.hAdapter;
+            D3DKMTCloseAdapter(&close);
+        }
+        return result;
+    }
+
+    // Set AMD_MVR_ADAPTER_DISABLE=1 to behave as if there were no AMD GPU (the application gets the real NVAPI).
+    bool IsDisabledByEnvironment() {
+        wchar_t value[8];
+        const DWORD length = GetEnvironmentVariableW(L"AMD_MVR_ADAPTER_DISABLE", value, ARRAYSIZE(value));
+        return length > 0 && length < ARRAYSIZE(value) && wcscmp(value, L"1") == 0;
+    }
+
     HRESULT __stdcall UnavailableExport() {
         return E_NOTIMPL;
     }
@@ -188,10 +236,27 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
         Log("dxgi_proxy %s (%s): loaded into %ls\n", VERSION_STRING, VERSION_COMMIT, GetModulePath(nullptr).c_str());
 
         // Loaded from DllMain(), which is normally discouraged, but this is the only way to run before the
-        // application's code. Its DllMain() does not wait on other threads.
+        // application's code. Their DllMain() does not wait on other threads.
         if (IsSupportedApplication()) {
-            const std::wstring path = GetDirectory(GetModulePath(module)) + L"\\nvapi64.dll";
-            // Never unloaded: the adapter installs hooks for the lifetime of the process.
+            // Without an AMD GPU, the application must get the real NVAPI (on NVIDIA systems). Our nvapi64.dll is in
+            // the application's folder, which is searched first: instead we load the system one now. A DLL already
+            // loaded with the same module name is used by later loads, wherever it is.
+            const AmdGpu amdGpu = IsDisabledByEnvironment() ? AmdGpu::Absent : DetectAmdGpu();
+            std::wstring path;
+            if (amdGpu == AmdGpu::Absent) {
+                wchar_t systemDirectory[MAX_PATH];
+                const UINT length = GetSystemDirectoryW(systemDirectory, MAX_PATH);
+                path = std::wstring(systemDirectory, length < MAX_PATH ? length : 0) + L"\\nvapi64.dll";
+                Log("dxgi_proxy: %s: using the system NVAPI\n",
+                    IsDisabledByEnvironment() ? "disabled by AMD_MVR_ADAPTER_DISABLE" : "no AMD GPU found");
+            } else {
+                if (amdGpu == AmdGpu::Unknown) {
+                    Log("dxgi_proxy: could not enumerate the GPUs, assuming an AMD GPU\n");
+                }
+                path = GetDirectory(GetModulePath(module)) + L"\\nvapi64.dll";
+            }
+            // Never unloaded: the adapter installs hooks for the lifetime of the process (and the system NVAPI must
+            // remain the one the application finds).
             if (LoadLibraryW(path.c_str())) {
                 Log("dxgi_proxy: loaded %ls\n", path.c_str());
             } else {

@@ -303,6 +303,20 @@ float4 main() : SV_Position {
         }
 
         std::vector<ViewOutput> views = FindViewOutputs(outputSignature, numCustomSemantics, customSemantics);
+
+        // The custom semantics given by the application do not always match the outputs of the shader: iRacing
+        // creates some multi-view geometry shaders (outputting NV_POSITION_VIEW_n_SEMANTIC) with the semantics of
+        // single pass stereo (NV_X_RIGHT). Then we look for the NVIDIA names, which are unambiguous.
+        bool matchedByName = false;
+        if (views.empty()) {
+            NV_CUSTOM_SEMANTIC nvidiaSemantics[2]{};
+            nvidiaSemantics[0].NVCustomSemanticType = NV_X_RIGHT_SEMANTIC;
+            strcpy_s(nvidiaSemantics[0].NVCustomSemanticNameString, "NV_X_RIGHT");
+            nvidiaSemantics[1].NVCustomSemanticType = NV_POSITION_SEMANTIC;
+            strcpy_s(nvidiaSemantics[1].NVCustomSemanticNameString, "NV_POSITION");
+            views = FindViewOutputs(outputSignature, ARRAYSIZE(nvidiaSemantics), nvidiaSemantics);
+            matchedByName = !views.empty();
+        }
         if (views.empty()) {
             return notPatched("no view outputs");
         }
@@ -571,7 +585,7 @@ float4 main() : SV_Position {
         }
         const bool xOnly = std::all_of(views.cbegin(), views.cend(), [](const ViewOutput& view) { return view.xOnly; });
         summary = "rewritten (" + std::to_string(views.size()) + (views.size() == 1 ? " extra view" : " extra views") +
-                  (xOnly ? ", x only)" : ")");
+                  (xOnly ? ", x only" : "") + (matchedByName ? ", outputs matched by name)" : ")");
 
         if (isShaderModel4) {
             summary += ", upgraded from " + std::string(stage) + "_" + std::to_string(program.MajorVersion()) + "_" +

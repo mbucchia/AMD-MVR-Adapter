@@ -4,9 +4,29 @@ A replacement `nvapi64.dll` that lets Direct3D 11 applications written for NVIDI
 
 I coined this idea in April 2024 in an [iRacing forum post](https://forums.iracing.com/discussion/comment/522573/#Comment_522573), but never had the time to push it through. With the help of Claude AI, something that was weeks of coding before, is now possible in a much shorter amount of time.
 
+DISCLAIMER: This software is distributed as-is, without any warranties or conditions of any kind. Use at your own risks.
+
 ## Installing
 
-See the [Release page](https://github.com/mbucchia/AMD-MVR-Adapter/releases/latest).
+See the [Release page](https://github.com/mbucchia/AMD-MVR-Adapter/releases/latest) for a download link.
+
+Extract `dxgi.dll` and `nvapi64.dll` into the game's installation folder. The extracted files should appear next to iRacing's `iRacingSim64DX11.exe`. **You can remove the mod later by deleting these two files.**
+
+**You will still need to enable SPS or MVR foveated rendering in iRacing's display settings.**
+
+Go to 'Settings' > 'Display' > 'VR' and change 'VR Mode'.
+
+In my testing, this required restarting the session.
+
+# Troubleshooting
+
+There are log files under `C:\Users\<username>\AppData\Local\AMD-MVR-Adapter`. If this folder is not created or is empty, then it means the installation above failed.
+
+If your GPU or GPU driver does not support what this tool needs, you will see the following message in `nvapi_adapter.log`:
+
+> ERROR: Your GPU or driver does not support multi-view (AMD view broadcasting): Single Pass Stereo and Multi-View Rendering will not be available.
+
+Make sure you have the latest driver for your GPU, or try a full re-install (factory reset) of the driver if you think this statement is incorrect.
 
 ## Implementation
 
@@ -23,11 +43,11 @@ The table below summarizes the correspondences between NVIDIA and AMD details:
 
 Translating calls on the CPU is the easy part of the process. Rewriting the vertex shaders is the complex part, and requires a DXBC parser and writer. An NVIDIA SPS/MVR vertex/geometry shader runs once and outputs the position of each view through custom semantics (`NV_X_RIGHT`, `NV_XYZW_RIGHT`, or `NV_POSITION` matching `NV_POSITION_VIEW_n`), while the same shaders with AMD view broadcasting runs once per view. So the shader is "un-looped": it still computes the positions of all views, then uses the AMD intrinsic `AmdDxExtShaderIntrinsics_GetViewportIndex()` to select the one for the view it runs for, and writes it to `SV_Position`. The view index is also written to a new `SV_ViewportArrayIndex` output, which pixel shaders written for SPS/MVR read to select per-eye data (on NVIDIA, the fast geometry shader provided it).
 
-Games like iRacing may also gate exposing SPS/MVR to the user after detecting that the GPU is NVIDIA (as opposed to simply querying NVAPI). The GPU vendor ID is spoofed to always return NVIDIA, and other NVAPI functions (such as DRS in the case of iRacing) are mocked up.
+Games like iRacing may also gate exposing SPS/MVR to the user after detecting that the GPU is NVIDIA (as opposed to simply querying NVAPI). The GPU vendor ID is spoofed to return NVIDIA, and other NVAPI functions (such as DRS in the case of iRacing) are mocked up.
 
 ## Building
 
-The Visual Studio solution is self-contained, but be sure to initialize Git submodules after checking out the repository! Output is placed in the `bin/` folder.
+The Visual Studio solution is self-contained, but be sure to initialize Git submodules after checking out the repository! Output is placed in the `bin/` folder. The VRWorks SDK demo app (`demo_dx11` project) can be used to quickly iterate changes, however beware that it is not representative of the complexity of a game like iRacing and will not exercise all the logic.
 
 ## Limitations
 

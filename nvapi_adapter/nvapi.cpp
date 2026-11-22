@@ -46,6 +46,15 @@ namespace {
         kId_NvAPI_D3D11_CreateGeometryShaderEx_2 = 0x99ED5C1C,
         kId_NvAPI_D3D11_CreateFastGeometryShaderExplicit = 0x71AB7C9C,
         kId_NvAPI_D3D11_CreatePixelShaderEx_2 = 0x4162822B,
+        kId_NvAPI_GetErrorMessage = 0x6C2D048C,
+        kId_NvAPI_DRS_CreateSession = 0x0694D52E,
+        kId_NvAPI_DRS_DestroySession = 0xDAD9CFF8,
+        kId_NvAPI_DRS_LoadSettings = 0x375DBD6B,
+        kId_NvAPI_DRS_GetBaseProfile = 0xDA8466A0,
+        kId_NvAPI_DRS_GetCurrentGlobalProfile = 0x617BFF9F,
+        kId_NvAPI_DRS_FindProfileByName = 0x7E4A9A0B,
+        kId_NvAPI_DRS_FindApplicationByName = 0xEEE566B2,
+        kId_NvAPI_DRS_GetSetting = 0x73BF8338,
     };
 
     // IDs queried by the static library that we know about and deliberately do not implement (returning nullptr is
@@ -140,6 +149,123 @@ NvAPI_Status __cdecl NvAPI_Initialize() {
 NvAPI_Status __cdecl NvAPI_Unload() {
     LOG_CALL();
     return NVAPI_OK;
+}
+
+NvAPI_Status __cdecl NvAPI_GetErrorMessage(NvAPI_Status nr, NvAPI_ShortString szDesc) {
+    logging::Log("--> %s(nr=%d)\n", __func__, nr);
+    if (!szDesc) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    const char* name = nullptr;
+    switch (nr) {
+#define NAME(status)                                                                                                   \
+    case status:                                                                                                       \
+        name = #status;                                                                                                \
+        break
+        NAME(NVAPI_OK);
+        NAME(NVAPI_ERROR);
+        NAME(NVAPI_LIBRARY_NOT_FOUND);
+        NAME(NVAPI_NO_IMPLEMENTATION);
+        NAME(NVAPI_API_NOT_INITIALIZED);
+        NAME(NVAPI_INVALID_ARGUMENT);
+        NAME(NVAPI_NVIDIA_DEVICE_NOT_FOUND);
+        NAME(NVAPI_NOT_SUPPORTED);
+        NAME(NVAPI_INCOMPATIBLE_STRUCT_VERSION);
+        NAME(NVAPI_PROFILE_NOT_FOUND);
+        NAME(NVAPI_EXECUTABLE_NOT_FOUND);
+        NAME(NVAPI_SETTING_NOT_FOUND);
+#undef NAME
+    }
+    if (name) {
+        strcpy_s(szDesc, NVAPI_SHORT_STRING_MAX, name);
+    } else {
+        sprintf_s(szDesc, NVAPI_SHORT_STRING_MAX, "NVAPI error %d", nr);
+    }
+    return NVAPI_OK;
+}
+
+// Driver settings (DRS): This is not needed for SPS/MVR, but iRacing will declare that the adapter is not NVIDIA if those fail.
+// Implement some very basic mock-ups.
+
+namespace {
+    struct FakeDrsObject {
+        int unused;
+    };
+    FakeDrsObject g_drsSession;
+    FakeDrsObject g_drsBaseProfile;
+
+    std::string ToString(const NvU16* unicodeString) {
+        std::string result;
+        for (size_t i = 0; i < NVAPI_UNICODE_STRING_MAX && unicodeString[i]; i++) {
+            result += unicodeString[i] < 0x80 ? static_cast<char>(unicodeString[i]) : '?';
+        }
+        return result;
+    }
+} // namespace
+
+NvAPI_Status __cdecl NvAPI_DRS_CreateSession(NvDRSSessionHandle* phSession) {
+    LOG_CALL();
+    if (!phSession) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    *phSession = reinterpret_cast<NvDRSSessionHandle>(&g_drsSession);
+    return NVAPI_OK;
+}
+
+NvAPI_Status __cdecl NvAPI_DRS_DestroySession(NvDRSSessionHandle hSession) {
+    LOG_CALL();
+    return hSession ? NVAPI_OK : NVAPI_INVALID_ARGUMENT;
+}
+
+NvAPI_Status __cdecl NvAPI_DRS_LoadSettings(NvDRSSessionHandle hSession) {
+    LOG_CALL();
+    return hSession ? NVAPI_OK : NVAPI_INVALID_ARGUMENT;
+}
+
+NvAPI_Status __cdecl NvAPI_DRS_GetBaseProfile(NvDRSSessionHandle hSession, NvDRSProfileHandle* phProfile) {
+    LOG_CALL();
+    if (!hSession || !phProfile) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    *phProfile = reinterpret_cast<NvDRSProfileHandle>(&g_drsBaseProfile);
+    return NVAPI_OK;
+}
+
+NvAPI_Status __cdecl NvAPI_DRS_GetCurrentGlobalProfile(NvDRSSessionHandle hSession, NvDRSProfileHandle* phProfile) {
+    LOG_CALL();
+    return NvAPI_DRS_GetBaseProfile(hSession, phProfile);
+}
+
+NvAPI_Status __cdecl NvAPI_DRS_FindProfileByName(NvDRSSessionHandle hSession,
+                                                 NvAPI_UnicodeString profileName,
+                                                 NvDRSProfileHandle* phProfile) {
+    logging::Log("--> %s(%s)\n", __func__, profileName ? ToString(profileName).c_str() : "null");
+    if (!hSession || !profileName || !phProfile) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    return NVAPI_PROFILE_NOT_FOUND;
+}
+
+NvAPI_Status __cdecl NvAPI_DRS_FindApplicationByName(NvDRSSessionHandle hSession,
+                                                     NvAPI_UnicodeString appName,
+                                                     NvDRSProfileHandle* phProfile,
+                                                     NVDRS_APPLICATION* pApplication) {
+    logging::Log("--> %s(%s)\n", __func__, appName ? ToString(appName).c_str() : "null");
+    if (!hSession || !appName || !phProfile || !pApplication) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    return NVAPI_EXECUTABLE_NOT_FOUND;
+}
+
+NvAPI_Status __cdecl NvAPI_DRS_GetSetting(NvDRSSessionHandle hSession,
+                                          NvDRSProfileHandle hProfile,
+                                          NvU32 settingId,
+                                          NVDRS_SETTING* pSetting) {
+    logging::Log("--> %s(settingId=0x%08x)\n", __func__, settingId);
+    if (!hSession || !hProfile || !pSetting) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    return NVAPI_SETTING_NOT_FOUND;
 }
 
 NvAPI_Status __cdecl NvAPI_D3D_RegisterDevice(IUnknown* pDev) {
@@ -379,6 +505,15 @@ extern "C" __declspec(dllexport) void* __cdecl nvapi_QueryInterface(NvU32 id) {
         RESOLVE(NvAPI_D3D11_CreateGeometryShaderEx_2);
         RESOLVE(NvAPI_D3D11_CreateFastGeometryShaderExplicit);
         RESOLVE(NvAPI_D3D11_CreatePixelShaderEx_2);
+        RESOLVE(NvAPI_GetErrorMessage);
+        RESOLVE(NvAPI_DRS_CreateSession);
+        RESOLVE(NvAPI_DRS_DestroySession);
+        RESOLVE(NvAPI_DRS_LoadSettings);
+        RESOLVE(NvAPI_DRS_GetBaseProfile);
+        RESOLVE(NvAPI_DRS_GetCurrentGlobalProfile);
+        RESOLVE(NvAPI_DRS_FindProfileByName);
+        RESOLVE(NvAPI_DRS_FindApplicationByName);
+        RESOLVE(NvAPI_DRS_GetSetting);
 #undef RESOLVE
     }
 

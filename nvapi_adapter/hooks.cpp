@@ -35,6 +35,178 @@ namespace {
     // original functions.
     thread_local bool t_inDeviceCreation = false;
 
+    // Vendor ID spoofing.
+    //
+    // Applications may check that the GPU is from NVIDIA (through the DXGI adapter description) before they even query
+    // NVAPI for the VR features. We report the AMD GPUs as NVIDIA ones, but only to the application's own code (the
+    // main executable): AGS, the AMD driver and the D3D runtime must see the real vendor.
+    // TODO: Only the vendor ID is changed: the device ID and description remain AMD's.
+    constexpr UINT kVendorIdAmd = 0x1002;
+    constexpr UINT kVendorIdNvidia = 0x10de;
+
+    decltype(&CreateDXGIFactory) g_original_CreateDXGIFactory = nullptr;
+    decltype(&CreateDXGIFactory1) g_original_CreateDXGIFactory1 = nullptr;
+    decltype(&CreateDXGIFactory2) g_original_CreateDXGIFactory2 = nullptr;
+
+    using PFN_GetDesc = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter*, DXGI_ADAPTER_DESC*);
+    using PFN_GetDesc1 = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter1*, DXGI_ADAPTER_DESC1*);
+    using PFN_GetDesc2 = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter2*, DXGI_ADAPTER_DESC2*);
+    using PFN_GetDesc3 = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter4*, DXGI_ADAPTER_DESC3*);
+    PFN_GetDesc g_original_GetDesc = nullptr;
+    PFN_GetDesc1 g_original_GetDesc1 = nullptr;
+    PFN_GetDesc2 g_original_GetDesc2 = nullptr;
+    PFN_GetDesc3 g_original_GetDesc3 = nullptr;
+
+    // Whether a return address is in the main executable.
+    bool IsCalledFromApplication(void* returnAddress) {
+        static const auto [begin, end] = [] {
+            const auto base = reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr));
+            const auto dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+            const auto ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dosHeader->e_lfanew);
+            return std::pair{base, base + ntHeaders->OptionalHeader.SizeOfImage};
+        }();
+        const auto address = static_cast<const uint8_t*>(returnAddress);
+        return address >= begin && address < end;
+    }
+
+    void SpoofVendorId(UINT& vendorId, const char* method, void* returnAddress) {
+        if (vendorId != kVendorIdAmd || !IsCalledFromApplication(returnAddress)) {
+            return;
+        }
+        vendorId = kVendorIdNvidia;
+        static std::once_flag logged;
+        std::call_once(logged, [&] {
+            logging::Log("Reporting the AMD GPU as NVIDIA to the application (first time: %s from exe+0x%llx)\n",
+                         method,
+                         static_cast<unsigned long long>(static_cast<const uint8_t*>(returnAddress) -
+                                                         reinterpret_cast<const uint8_t*>(GetModuleHandleW(nullptr))));
+        });
+    }
+
+    HRESULT STDMETHODCALLTYPE hooked_GetDesc(IDXGIAdapter* adapter, DXGI_ADAPTER_DESC* desc) {
+        const HRESULT hr = g_original_GetDesc(adapter, desc);
+        if (SUCCEEDED(hr) && desc) {
+            SpoofVendorId(desc->VendorId, "GetDesc", _ReturnAddress());
+        }
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE hooked_GetDesc1(IDXGIAdapter1* adapter, DXGI_ADAPTER_DESC1* desc) {
+        const HRESULT hr = g_original_GetDesc1(adapter, desc);
+        if (SUCCEEDED(hr) && desc) {
+            SpoofVendorId(desc->VendorId, "GetDesc1", _ReturnAddress());
+        }
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE hooked_GetDesc2(IDXGIAdapter2* adapter, DXGI_ADAPTER_DESC2* desc) {
+        const HRESULT hr = g_original_GetDesc2(adapter, desc);
+        if (SUCCEEDED(hr) && desc) {
+            SpoofVendorId(desc->VendorId, "GetDesc2", _ReturnAddress());
+        }
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE hooked_GetDesc3(IDXGIAdapter4* adapter, DXGI_ADAPTER_DESC3* desc) {
+        const HRESULT hr = g_original_GetDesc3(adapter, desc);
+        if (SUCCEEDED(hr) && desc) {
+            SpoofVendorId(desc->VendorId, "GetDesc3", _ReturnAddress());
+        }
+        return hr;
+    }
+
+    template <typename T>
+    T GetVtableEntry(void* object, size_t index) {
+        return reinterpret_cast<T>((*reinterpret_cast<void***>(object))[index]);
+    }
+
+    // Hook the adapter description methods, on the first factory created. The methods are shared by all the adapters
+    // (they are in dxgi.dll), so hooking the ones of the first adapter is enough.
+    void HookAdapterMethods(IUnknown* factoryUnknown) {
+        static std::once_flag once;
+        std::call_once(once, [factoryUnknown] {
+            Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+            Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+            if (FAILED(factoryUnknown->QueryInterface(IID_PPV_ARGS(&factory))) ||
+                FAILED(factory->EnumAdapters1(0, &adapter))) {
+                logging::Log("Cannot hook the DXGI adapter methods: no adapter\n");
+                return;
+            }
+
+            // Vtable indices: IUnknown (3), IDXGIObject (4), then IDXGIAdapter::EnumOutputs (7), GetDesc (8),
+            // CheckInterfaceSupport (9), IDXGIAdapter1::GetDesc1 (10), IDXGIAdapter2::GetDesc2 (11),
+            // IDXGIAdapter3 (12 to 17) and IDXGIAdapter4::GetDesc3 (18).
+            g_original_GetDesc = GetVtableEntry<PFN_GetDesc>(adapter.Get(), 8);
+            g_original_GetDesc1 = GetVtableEntry<PFN_GetDesc1>(adapter.Get(), 10);
+            Microsoft::WRL::ComPtr<IDXGIAdapter2> adapter2;
+            if (SUCCEEDED(adapter.As(&adapter2))) {
+                g_original_GetDesc2 = GetVtableEntry<PFN_GetDesc2>(adapter2.Get(), 11);
+            }
+            Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter4;
+            if (SUCCEEDED(adapter.As(&adapter4))) {
+                g_original_GetDesc3 = GetVtableEntry<PFN_GetDesc3>(adapter4.Get(), 18);
+            }
+
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+            DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc), reinterpret_cast<PVOID>(hooked_GetDesc));
+            DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc1), reinterpret_cast<PVOID>(hooked_GetDesc1));
+            if (g_original_GetDesc2) {
+                DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc2), reinterpret_cast<PVOID>(hooked_GetDesc2));
+            }
+            if (g_original_GetDesc3) {
+                DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc3), reinterpret_cast<PVOID>(hooked_GetDesc3));
+            }
+            logging::Log("DXGI adapter hooks installed: %ld\n", DetourTransactionCommit());
+        });
+    }
+
+    HRESULT WINAPI hooked_CreateDXGIFactory(REFIID riid, void** ppFactory) {
+        const HRESULT hr = g_original_CreateDXGIFactory(riid, ppFactory);
+        if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+            HookAdapterMethods(static_cast<IUnknown*>(*ppFactory));
+        }
+        return hr;
+    }
+
+    HRESULT WINAPI hooked_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
+        const HRESULT hr = g_original_CreateDXGIFactory1(riid, ppFactory);
+        if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+            HookAdapterMethods(static_cast<IUnknown*>(*ppFactory));
+        }
+        return hr;
+    }
+
+    HRESULT WINAPI hooked_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
+        const HRESULT hr = g_original_CreateDXGIFactory2(Flags, riid, ppFactory);
+        if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+            HookAdapterMethods(static_cast<IUnknown*>(*ppFactory));
+        }
+        return hr;
+    }
+
+    // Describe the adapter a device is created on, with its real vendor (for logging).
+    std::string DescribeAdapter(IDXGIAdapter* adapter) {
+        Microsoft::WRL::ComPtr<IDXGIAdapter> target = adapter;
+        if (!target) {
+            Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+            if (!g_original_CreateDXGIFactory1 || FAILED(g_original_CreateDXGIFactory1(IID_PPV_ARGS(&factory))) ||
+                FAILED(factory->EnumAdapters(0, &target))) {
+                return "default adapter (?)";
+            }
+        }
+        DXGI_ADAPTER_DESC desc{};
+        const HRESULT hr = g_original_GetDesc ? g_original_GetDesc(target.Get(), &desc) : target->GetDesc(&desc);
+        if (FAILED(hr)) {
+            return "?";
+        }
+        char description[128];
+        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, description, sizeof(description), nullptr, nullptr);
+        char result[192];
+        sprintf_s(result, "%s%s (vendor 0x%04x)", adapter ? "" : "default adapter: ", description, desc.VendorId);
+        return result;
+    }
+
     HMODULE WINAPI hooked_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
         if (lpLibFileName && _wcsicmp(lpLibFileName, L"nvapi64.dll") == 0) {
             logging::Log("Redirecting LoadLibraryExW(%ls)\n", lpLibFileName);
@@ -116,8 +288,10 @@ namespace {
 
         AGSDX11ReturnedParams returnedParams{};
         HRESULT hr;
-        if (context && agsDriverExtensionsDX11_CreateDevice(
-                           context, &creationParams, &extensionParams, &returnedParams) == AGS_SUCCESS) {
+        const AGSReturnCode agsResult =
+            context ? agsDriverExtensionsDX11_CreateDevice(context, &creationParams, &extensionParams, &returnedParams)
+                    : AGS_FAILURE;
+        if (context && agsResult == AGS_SUCCESS) {
             logging::Log("Created D3D11 device %p through AGS context %p (multiView=%u)\n",
                          returnedParams.pDevice,
                          context,
@@ -156,7 +330,15 @@ namespace {
             hr = S_OK;
         } else {
             if (context) {
-                logging::Log("Could not create the device through AGS, falling back without AGS\n");
+                logging::Log("Could not create the device through AGS (error %d), falling back without AGS: %s, "
+                             "driverType=%d, flags=0x%x, %u feature levels (first 0x%x), swap chain=%s\n",
+                             agsResult,
+                             DescribeAdapter(pAdapter).c_str(),
+                             DriverType,
+                             Flags,
+                             FeatureLevels,
+                             pFeatureLevels && FeatureLevels ? pFeatureLevels[0] : 0,
+                             ppSwapChain && pSwapChainDesc ? "yes" : "no");
                 agsDeInitialize(context);
             }
             hr = g_original_D3D11CreateDeviceAndSwapChain(pAdapter,
@@ -213,15 +395,41 @@ namespace {
                                                     ppImmediateContext);
     }
 
+    // A function that cannot be found is skipped: passing a null pointer to DetourAttach() would fail the whole
+    // transaction, leaving every other function unhooked.
     template <typename T>
-    void Attach(T& original, T hooked, const wchar_t* moduleName, const char* functionName) {
-        original = reinterpret_cast<T>(GetProcAddress(GetModuleHandleW(moduleName), functionName));
+    void Attach(T& original, T hooked, HMODULE module, const char* functionName) {
+        original = module ? reinterpret_cast<T>(GetProcAddress(module, functionName)) : nullptr;
+        if (!original) {
+            logging::Log("Cannot hook %s: not found\n", functionName);
+            return;
+        }
         DetourAttach(reinterpret_cast<PVOID*>(&original), reinterpret_cast<PVOID>(hooked));
     }
 
     template <typename T>
+    void Attach(T& original, T hooked, const wchar_t* moduleName, const char* functionName) {
+        Attach(original, hooked, GetModuleHandleW(moduleName), functionName);
+    }
+
+    template <typename T>
     void Detach(T& original, T hooked) {
-        DetourDetach(reinterpret_cast<PVOID*>(&original), reinterpret_cast<PVOID>(hooked));
+        if (original) {
+            DetourDetach(reinterpret_cast<PVOID*>(&original), reinterpret_cast<PVOID>(hooked));
+        }
+    }
+
+    // The dxgi.dll of the system folder: the application may be using a proxy dxgi.dll (such as ours), whose exports
+    // jump to the system one.
+    HMODULE LoadSystemDxgi() {
+        wchar_t path[MAX_PATH];
+        const UINT length = GetSystemDirectoryW(path, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH - 10) {
+            return nullptr;
+        }
+        wcscat_s(path, L"\\dxgi.dll");
+        // Never unloaded: we hook it for the lifetime of the process.
+        return LoadLibraryW(path);
     }
 
 } // namespace
@@ -253,6 +461,8 @@ namespace adapter {
     }
 
     void InstallHooks() {
+        const HMODULE dxgi = LoadSystemDxgi();
+
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
         Attach(g_original_LoadLibraryExW, hooked_LoadLibraryExW, L"kernelbase.dll", "LoadLibraryExW");
@@ -261,12 +471,22 @@ namespace adapter {
                hooked_D3D11CreateDeviceAndSwapChain,
                L"d3d11.dll",
                "D3D11CreateDeviceAndSwapChain");
+        Attach(g_original_CreateDXGIFactory, hooked_CreateDXGIFactory, dxgi, "CreateDXGIFactory");
+        Attach(g_original_CreateDXGIFactory1, hooked_CreateDXGIFactory1, dxgi, "CreateDXGIFactory1");
+        Attach(g_original_CreateDXGIFactory2, hooked_CreateDXGIFactory2, dxgi, "CreateDXGIFactory2");
         logging::Log("Hooks installed: %ld\n", DetourTransactionCommit());
     }
 
     void UninstallHooks() {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
+        Detach(g_original_GetDesc, hooked_GetDesc);
+        Detach(g_original_GetDesc1, hooked_GetDesc1);
+        Detach(g_original_GetDesc2, hooked_GetDesc2);
+        Detach(g_original_GetDesc3, hooked_GetDesc3);
+        Detach(g_original_CreateDXGIFactory, hooked_CreateDXGIFactory);
+        Detach(g_original_CreateDXGIFactory1, hooked_CreateDXGIFactory1);
+        Detach(g_original_CreateDXGIFactory2, hooked_CreateDXGIFactory2);
         Detach(g_original_LoadLibraryExW, hooked_LoadLibraryExW);
         Detach(g_original_D3D11CreateDevice, hooked_D3D11CreateDevice);
         Detach(g_original_D3D11CreateDeviceAndSwapChain, hooked_D3D11CreateDeviceAndSwapChain);

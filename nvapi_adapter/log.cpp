@@ -42,6 +42,9 @@ namespace {
         g_logFile = _wfsopen((directory + L"\\nvapi_adapter.log").c_str(), L"w", _SH_DENYWR);
     }
 
+    // Whether the next message starts a new line (some lines are written with several calls).
+    bool g_atLineStart = true;
+
 } // namespace
 
 namespace logging {
@@ -58,20 +61,36 @@ namespace logging {
     }
 
     void Log(const char* fmt, ...) {
+        // Lines start with the local time, for example "2026-11-21 16:05:12.345 ".
         char buffer[1024];
+        SYSTEMTIME time;
+        GetLocalTime(&time);
+        const int timestampLength = sprintf_s(buffer,
+                                              "%04u-%02u-%02u %02u:%02u:%02u.%03u ",
+                                              time.wYear,
+                                              time.wMonth,
+                                              time.wDay,
+                                              time.wHour,
+                                              time.wMinute,
+                                              time.wSecond,
+                                              time.wMilliseconds);
+        char* const message = buffer + timestampLength;
         va_list va;
         va_start(va, fmt);
-        vsnprintf_s(buffer, sizeof(buffer), _TRUNCATE, fmt, va);
+        vsnprintf_s(message, sizeof(buffer) - timestampLength, _TRUNCATE, fmt, va);
         va_end(va);
 
-        OutputDebugStringA(buffer);
-
         std::unique_lock lock(g_logMutex);
+        const char* const output = g_atLineStart ? buffer : message;
+        const size_t messageLength = strlen(message);
+        g_atLineStart = messageLength > 0 ? message[messageLength - 1] == '\n' : g_atLineStart;
+
+        OutputDebugStringA(output);
         if (!g_logFileOpenAttempted) {
             OpenLogFile();
         }
         if (g_logFile) {
-            fputs(buffer, g_logFile);
+            fputs(output, g_logFile);
             fflush(g_logFile);
         }
     }

@@ -65,11 +65,23 @@ namespace {
     };
     static_assert(ARRAYSIZE(kExportNames) == kExportCount);
 
+    // Each message is a whole line, which starts with the local time, for example "2026-11-21 16:05:12.345 ".
     void Log(const char* fmt, ...) {
         char buffer[1024];
+        SYSTEMTIME time;
+        GetLocalTime(&time);
+        const int timestampLength = sprintf_s(buffer,
+                                              "%04u-%02u-%02u %02u:%02u:%02u.%03u ",
+                                              time.wYear,
+                                              time.wMonth,
+                                              time.wDay,
+                                              time.wHour,
+                                              time.wMinute,
+                                              time.wSecond,
+                                              time.wMilliseconds);
         va_list va;
         va_start(va, fmt);
-        vsnprintf_s(buffer, sizeof(buffer), _TRUNCATE, fmt, va);
+        vsnprintf_s(buffer + timestampLength, sizeof(buffer) - timestampLength, _TRUNCATE, fmt, va);
         va_end(va);
         OutputDebugStringA(buffer);
 

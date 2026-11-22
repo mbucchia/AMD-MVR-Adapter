@@ -43,7 +43,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
         adapter::GetState().module = hModule;
-        logging::Log("AMD-MVR-Adapter loaded\n");
+        {
+            char executable[MAX_PATH] = "?";
+            GetModuleFileNameA(nullptr, executable, MAX_PATH);
+            logging::Log("AMD-MVR-Adapter loaded into %s (process %lu)\n", executable, GetCurrentProcessId());
+        }
         adapter::InstallHooks();
         break;
     case DLL_PROCESS_DETACH:

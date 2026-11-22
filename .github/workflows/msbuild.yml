@@ -43,6 +43,7 @@ jobs:
 
         copy README.md bin\${{env.BUILD_CONFIGURATION}}\
         copy LICENSE bin\${{env.BUILD_CONFIGURATION}}\
+        copy THIRD_PARTY bin\${{env.BUILD_CONFIGURATION}}\
 
     - name: Publish
       uses: actions/upload-artifact@v4
@@ -53,6 +54,7 @@ jobs:
           bin/${{env.BUILD_CONFIGURATION}}/nvapi64.dll
           bin/${{env.BUILD_CONFIGURATION}}/README.md
           bin/${{env.BUILD_CONFIGURATION}}/LICENSE
+          bin/${{env.BUILD_CONFIGURATION}}/THIRD_PARTY
 
     - name: Publish symbols
       uses: actions/upload-artifact@v4

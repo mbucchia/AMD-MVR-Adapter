@@ -61,4 +61,5 @@ These do not seem to apply to iRacing, but may apply to other games if you try p
 
 - Only planar projection: no Lens Matched Shading (Modified W, fast GS culling) or Multi-Res Shading. Modified W is reported as supported, because iRacing requires it to enable SMP for triple screens (without using it), but only the identity (all coefficients 0) is accepted: anything else fails with `NVAPI_NOT_SUPPORTED` and a line in the log.
 - One render target slice per view cannot be expressed: AGS replicates draws to every combination of viewport and slice in its masks.
+- The per-view viewport masks output by the shaders are not honored: view N always goes to viewport N. When independent viewport masks are enabled, a view whose viewport and render target slice duplicate those of an earlier view is left out, as a heuristic based on the viewports bound when multi-view is enabled: iRacing disables the 4th view of its triple screen SMP in its shaders, and sets its viewport to a copy of the 3rd one before enabling multi-view.
 - View broadcasting is applied to the immediate context of the device passed by the application, even when it passes a deferred context.

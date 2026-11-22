@@ -11,6 +11,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Framework", "Framework", "{
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "nvapi_adapter", "nvapi_adapter\nvapi_adapter.vcxproj", "{6A126D5F-42B4-434C-9328-821597BC9C5D}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "dxgi_proxy", "dxgi_proxy\dxgi_proxy.vcxproj", "{8D4E1B2A-6C3F-4F7E-9A15-2B7C0E5D9F61}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,10 @@ Global
 		{6A126D5F-42B4-434C-9328-821597BC9C5D}.Debug|x64.Build.0 = Debug|x64
 		{6A126D5F-42B4-434C-9328-821597BC9C5D}.Release|x64.ActiveCfg = Release|x64
 		{6A126D5F-42B4-434C-9328-821597BC9C5D}.Release|x64.Build.0 = Release|x64
+		{8D4E1B2A-6C3F-4F7E-9A15-2B7C0E5D9F61}.Debug|x64.ActiveCfg = Debug|x64
+		{8D4E1B2A-6C3F-4F7E-9A15-2B7C0E5D9F61}.Debug|x64.Build.0 = Debug|x64
+		{8D4E1B2A-6C3F-4F7E-9A15-2B7C0E5D9F61}.Release|x64.ActiveCfg = Release|x64
+		{8D4E1B2A-6C3F-4F7E-9A15-2B7C0E5D9F61}.Release|x64.Build.0 = Release|x64
 		{5729189D-A329-4507-9E64-C3C72C4C379A}.Debug|x64.ActiveCfg = Debug|x64
 		{5729189D-A329-4507-9E64-C3C72C4C379A}.Debug|x64.Build.0 = Debug|x64
 		{5729189D-A329-4507-9E64-C3C72C4C379A}.Release|x64.ActiveCfg = Release|x64

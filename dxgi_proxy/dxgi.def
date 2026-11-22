@@ -1,0 +1,23 @@
+; The exports of the system dxgi.dll (Windows 11 26100), with the same ordinals.
+LIBRARY dxgi
+EXPORTS
+	ApplyCompatResolutionQuirking=ApplyCompatResolutionQuirking_Stub @1
+	CompatString=CompatString_Stub @2
+	CompatValue=CompatValue_Stub @3
+	DXGIDumpJournal=DXGIDumpJournal_Stub @4
+	PIXBeginCapture=PIXBeginCapture_Stub @5
+	PIXEndCapture=PIXEndCapture_Stub @6
+	PIXGetCaptureState=PIXGetCaptureState_Stub @7
+	SetAppCompatStringPointer=SetAppCompatStringPointer_Stub @8
+	UpdateHMDEmulationStatus=UpdateHMDEmulationStatus_Stub @9
+	CreateDXGIFactory=CreateDXGIFactory_Stub @10
+	CreateDXGIFactory1=CreateDXGIFactory1_Stub @11
+	CreateDXGIFactory2=CreateDXGIFactory2_Stub @12
+	DXGID3D10CreateDevice=DXGID3D10CreateDevice_Stub @13
+	DXGID3D10CreateLayeredDevice=DXGID3D10CreateLayeredDevice_Stub @14
+	DXGID3D10GetLayeredDeviceSize=DXGID3D10GetLayeredDeviceSize_Stub @15
+	DXGID3D10RegisterLayers=DXGID3D10RegisterLayers_Stub @16
+	DXGIDeclareAdapterRemovalSupport=DXGIDeclareAdapterRemovalSupport_Stub @17
+	DXGIDisableVBlankVirtualization=DXGIDisableVBlankVirtualization_Stub @18
+	DXGIGetDebugInterface1=DXGIGetDebugInterface1_Stub @19
+	DXGIReportAdapterConfiguration=DXGIReportAdapterConfiguration_Stub @20

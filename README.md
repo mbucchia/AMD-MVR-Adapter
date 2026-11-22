@@ -18,6 +18,12 @@ Go to 'Settings' > 'Display' > 'VR' and change 'VR Mode'.
 
 In my testing, this required restarting the session.
 
+### Triple screens
+
+The same mod also enables iRacing's **Simultaneous Multi-Projection** (SMP) for triple screens, which renders the 3 projections with multi-view instead of 3 separate passes. This reduces CPU usage, which is usually the bottleneck with 3 projections.
+
+Go to 'Settings' > 'Display', turn on 'Render Scene Using 3 Projections', then 'Nvidia Simultaneous Multi-Projection'. This also requires restarting the session.
+
 ## Troubleshooting
 
 There are log files under `C:\Users\<username>\AppData\Local\AMD-MVR-Adapter`. If this folder is not created or is empty, then it means the installation above failed.
@@ -53,6 +59,6 @@ The Visual Studio solution is self-contained, but be sure to initialize Git subm
 
 These do not seem to apply to iRacing, but may apply to other games if you try porting the code.
 
-- Only planar projection: no Lens Matched Shading (Modified W, fast GS culling) or Multi-Res Shading.
+- Only planar projection: no Lens Matched Shading (Modified W, fast GS culling) or Multi-Res Shading. Modified W is reported as supported, because iRacing requires it to enable SMP for triple screens (without using it), but only the identity (all coefficients 0) is accepted: anything else fails with `NVAPI_NOT_SUPPORTED` and a line in the log.
 - One render target slice per view cannot be expressed: AGS replicates draws to every combination of viewport and slice in its masks.
 - View broadcasting is applied to the immediate context of the device passed by the application, even when it passes a deferred context.

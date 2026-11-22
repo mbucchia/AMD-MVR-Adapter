@@ -312,7 +312,10 @@ NvAPI_Status __cdecl NvAPI_D3D_QueryModifiedWSupport(
     if (pQueryModifiedWSupportedParams->version != NV_QUERY_MODIFIED_W_SUPPORT_PARAMS_VER1) {
         return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
     }
-    pQueryModifiedWSupportedParams->bModifiedWSupported = false;
+    // iRacing only enables "Nvidia Simultaneous Multi-Projection" (triple screen rendering with multi-view) when
+    // Modified W is reported as supported, although it does not use it for that mode. We report it, but only the
+    // identity (all coefficients 0) is actually accepted (see NvAPI_D3D_SetModifiedWMode()).
+    pQueryModifiedWSupportedParams->bModifiedWSupported = IsMultiViewAvailable(pDev);
     return NVAPI_OK;
 }
 
@@ -342,8 +345,31 @@ NvAPI_Status __cdecl NvAPI_D3D_SetMultiViewMode(IUnknown* pDevOrContext, NV_MULT
 }
 
 NvAPI_Status __cdecl NvAPI_D3D_SetModifiedWMode(IUnknown* pDevOrContext, NV_MODIFIED_W_PARAMS* psModifiedWParams) {
-    LOG_CALL();
-    return NVAPI_NOT_SUPPORTED;
+    if (!pDevOrContext || !psModifiedWParams) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+    if (psModifiedWParams->version != NV_MODIFIED_W_PARAMS_VER1) {
+        return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
+    }
+    if (psModifiedWParams->numEntries > NV_MODIFIED_W_MAX_VIEWPORTS) {
+        return NVAPI_INVALID_ARGUMENT;
+    }
+
+    // TODO: w' = w + A*x + B*y is not implemented (it would need the coefficients in the patched shaders, selected
+    // with the viewport index). Only the identity, which changes nothing, is accepted.
+    for (NvU32 i = 0; i < psModifiedWParams->numEntries; i++) {
+        const auto& coefficients = psModifiedWParams->modifiedWCoefficients[i];
+        if (coefficients.fA != 0.f || coefficients.fB != 0.f) {
+            static bool logged = false;
+            if (!logged) {
+                logging::Log("Modified W is not supported (viewport %u: A=%f B=%f)\n", i, coefficients.fA,
+                             coefficients.fB);
+                logged = true;
+            }
+            return NVAPI_NOT_SUPPORTED;
+        }
+    }
+    return NVAPI_OK;
 }
 
 NvAPI_Status __cdecl NvAPI_D3D_SetSinglePassStereoMode(IUnknown* pDevOrContext,

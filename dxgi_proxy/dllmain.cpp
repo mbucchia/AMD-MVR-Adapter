@@ -235,6 +235,18 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
         DisableThreadLibraryCalls(module);
         Log("dxgi_proxy %s (%s): loaded into %ls\n", VERSION_STRING, VERSION_COMMIT, GetModulePath(nullptr).c_str());
 
+        // Resolve all the exports now, so that the stubs jump directly to the system dxgi.dll: other software that
+        // follows our stubs to hook their target then finds the real functions, and not our resolvers.
+        size_t unresolved = 0;
+        for (unsigned int i = 0; i < kExportCount; i++) {
+            if (ResolveExport(i) == reinterpret_cast<void*>(&UnavailableExport)) {
+                unresolved++;
+            }
+        }
+        if (unresolved) {
+            Log("dxgi_proxy: %zu of the %zu exports could not be resolved in the system dxgi.dll\n", unresolved, kExportCount);
+        }
+
         // Loaded from DllMain(), which is normally discouraged, but this is the only way to run before the
         // application's code. Their DllMain() does not wait on other threads.
         if (IsSupportedApplication()) {

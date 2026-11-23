@@ -3,9 +3,9 @@
 ; A jump leaves the stack and the argument registers untouched, so the stubs work for any signature, including the
 ; undocumented functions.
 ;
-; The functions are resolved on their first call, not in DllMain(): other code may call our exports before our
-; DllMain() has run (for example a DLL initialized before us, that looks up dxgi.dll itself). Each entry of
-; g_systemFunctions initially points to a resolver, which resolves the function, stores it, and jumps to it.
+; The functions are resolved in DllMain(), but other code may call our exports before our DllMain() has run (for
+; example the application compatibility engine). So each entry of g_systemFunctions initially points to a resolver,
+; which resolves the function, stores it, and jumps to it.
 
 extern ResolveExport:proc
 
@@ -64,13 +64,25 @@ ResolveAndJump proc
     jmp rax
 ResolveAndJump endp
 
-; The stubs (exported through dxgi.def), and the resolvers they initially jump to.
+; The stubs (exported through dxgi.def).
+;
+; Other software (overlays, capture tools) commonly hooks the dxgi.dll exports, overwriting their first 5 to 14 bytes
+; with a jump, or follows a stub's jump to hook its target. So each stub is padded to 16 bytes with int3, which
+; hooking libraries recognize as padding, and nothing else (such as the resolvers) follows it.
 EXPORT macro name, index
+    align 16
 public name&_Stub
 name&_Stub proc
     jmp qword ptr [g_systemFunctions + index * 8]
+    db 10 dup (0CCh)
 name&_Stub endp
+endm
 
+EXPORT_LIST
+
+; The resolvers the stubs jump to until a function is resolved (see g_systemFunctions).
+EXPORT macro name, index
+    align 16
 name&_Resolve proc
     mov eax, index
     jmp ResolveAndJump

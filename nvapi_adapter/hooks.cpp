@@ -122,67 +122,137 @@ namespace {
 
     // Hook the adapter description methods, on the first factory created. The methods are shared by all the adapters
     // (they are in dxgi.dll), so hooking the ones of the first adapter is enough.
+    // "module+0xoffset" for a code address, to identify callers in the log.
+    std::string DescribeAddress(const void* address) {
+        HMODULE module = nullptr;
+        char path[MAX_PATH] = "?";
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                static_cast<LPCSTR>(address),
+                                &module) ||
+            !GetModuleFileNameA(module, path, MAX_PATH)) {
+            char result[32];
+            sprintf_s(result, "%p", address);
+            return result;
+        }
+        const char* name = strrchr(path, '\\');
+        char result[MAX_PATH + 32];
+        sprintf_s(result,
+                  "%s+0x%llx",
+                  name ? name + 1 : path,
+                  static_cast<unsigned long long>(static_cast<const uint8_t*>(address) -
+                                                  reinterpret_cast<const uint8_t*>(module)));
+        return result;
+    }
+
+    // Set on the thread installing the adapter hooks, to detect reentrancy (for example from another application's
+    // DXGI hooks, called while we enumerate the adapters).
+    thread_local bool t_inHookAdapterMethods = false;
+
+    // Hook the adapter description methods, on the first factory created. The methods are shared by all the adapters
+    // (they are in dxgi.dll), so hooking the ones of the first adapter is enough.
+    //
+    // This never waits: a call while the hooks are being installed (on another thread, or reentrant on this one)
+    // passes through, so that it cannot deadlock. Such an early call might see the real vendor ID.
     void HookAdapterMethods(IUnknown* factoryUnknown) {
-        static std::once_flag once;
-        std::call_once(once, [factoryUnknown] {
-            Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
-            Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-            if (FAILED(factoryUnknown->QueryInterface(IID_PPV_ARGS(&factory))) ||
-                FAILED(factory->EnumAdapters1(0, &adapter))) {
-                logging::Log("Cannot hook the DXGI adapter methods: no adapter\n");
-                return;
+        enum : int { NotInstalled, Installing, Installed };
+        static std::atomic<int> state = NotInstalled;
+        int expected = NotInstalled;
+        if (!state.compare_exchange_strong(expected, Installing)) {
+            if (expected == Installing) {
+                logging::Log("DXGI adapter hooks: already being installed (%s), skipping\n",
+                             t_inHookAdapterMethods ? "reentrant call on this thread" : "on another thread");
             }
+            return;
+        }
+        t_inHookAdapterMethods = true;
 
-            // Vtable indices: IUnknown (3), IDXGIObject (4), then IDXGIAdapter::EnumOutputs (7), GetDesc (8),
-            // CheckInterfaceSupport (9), IDXGIAdapter1::GetDesc1 (10), IDXGIAdapter2::GetDesc2 (11),
-            // IDXGIAdapter3 (12 to 17) and IDXGIAdapter4::GetDesc3 (18).
-            g_original_GetDesc = GetVtableEntry<PFN_GetDesc>(adapter.Get(), 8);
-            g_original_GetDesc1 = GetVtableEntry<PFN_GetDesc1>(adapter.Get(), 10);
-            Microsoft::WRL::ComPtr<IDXGIAdapter2> adapter2;
-            if (SUCCEEDED(adapter.As(&adapter2))) {
-                g_original_GetDesc2 = GetVtableEntry<PFN_GetDesc2>(adapter2.Get(), 11);
-            }
-            Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter4;
-            if (SUCCEEDED(adapter.As(&adapter4))) {
-                g_original_GetDesc3 = GetVtableEntry<PFN_GetDesc3>(adapter4.Get(), 18);
-            }
+        logging::Log("DXGI adapter hooks: enumerating the first adapter\n");
+        Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+        if (FAILED(factoryUnknown->QueryInterface(IID_PPV_ARGS(&factory))) ||
+            FAILED(factory->EnumAdapters1(0, &adapter))) {
+            logging::Log("Cannot hook the DXGI adapter methods: no adapter\n");
+            t_inHookAdapterMethods = false;
+            state = NotInstalled; // Try again with the next factory.
+            return;
+        }
 
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc), reinterpret_cast<PVOID>(hooked_GetDesc));
-            DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc1), reinterpret_cast<PVOID>(hooked_GetDesc1));
-            if (g_original_GetDesc2) {
-                DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc2), reinterpret_cast<PVOID>(hooked_GetDesc2));
-            }
-            if (g_original_GetDesc3) {
-                DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc3), reinterpret_cast<PVOID>(hooked_GetDesc3));
-            }
-            logging::Log("DXGI adapter hooks installed: %ld\n", DetourTransactionCommit());
-        });
+        // Vtable indices: IUnknown (3), IDXGIObject (4), then IDXGIAdapter::EnumOutputs (7), GetDesc (8),
+        // CheckInterfaceSupport (9), IDXGIAdapter1::GetDesc1 (10), IDXGIAdapter2::GetDesc2 (11),
+        // IDXGIAdapter3 (12 to 17) and IDXGIAdapter4::GetDesc3 (18).
+        logging::Log("DXGI adapter hooks: reading the adapter methods\n");
+        g_original_GetDesc = GetVtableEntry<PFN_GetDesc>(adapter.Get(), 8);
+        g_original_GetDesc1 = GetVtableEntry<PFN_GetDesc1>(adapter.Get(), 10);
+        Microsoft::WRL::ComPtr<IDXGIAdapter2> adapter2;
+        if (SUCCEEDED(adapter.As(&adapter2))) {
+            g_original_GetDesc2 = GetVtableEntry<PFN_GetDesc2>(adapter2.Get(), 11);
+        }
+        Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter4;
+        if (SUCCEEDED(adapter.As(&adapter4))) {
+            g_original_GetDesc3 = GetVtableEntry<PFN_GetDesc3>(adapter4.Get(), 18);
+        }
+        logging::Log("DXGI adapter hooks: GetDesc=%s GetDesc1=%s GetDesc2=%s GetDesc3=%s\n",
+                     DescribeAddress(reinterpret_cast<void*>(g_original_GetDesc)).c_str(),
+                     DescribeAddress(reinterpret_cast<void*>(g_original_GetDesc1)).c_str(),
+                     g_original_GetDesc2 ? DescribeAddress(reinterpret_cast<void*>(g_original_GetDesc2)).c_str() : "-",
+                     g_original_GetDesc3 ? DescribeAddress(reinterpret_cast<void*>(g_original_GetDesc3)).c_str() : "-");
+
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc), reinterpret_cast<PVOID>(hooked_GetDesc));
+        DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc1), reinterpret_cast<PVOID>(hooked_GetDesc1));
+        if (g_original_GetDesc2) {
+            DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc2), reinterpret_cast<PVOID>(hooked_GetDesc2));
+        }
+        if (g_original_GetDesc3) {
+            DetourAttach(reinterpret_cast<PVOID*>(&g_original_GetDesc3), reinterpret_cast<PVOID>(hooked_GetDesc3));
+        }
+        logging::Log("DXGI adapter hooks installed: %ld\n", DetourTransactionCommit());
+        t_inHookAdapterMethods = false;
+        state = Installed;
+    }
+
+    // Logs the first calls to the factory creation functions (with their caller), and hooks the adapter methods.
+    std::atomic<long> g_factoryCallCount = 0;
+    constexpr long kMaxLoggedFactoryCalls = 32;
+
+    template <typename Create>
+    HRESULT OnCreateFactory(const char* function, void* returnAddress, void** ppFactory, Create create) {
+        const long call = ++g_factoryCallCount;
+        const bool logged = call <= kMaxLoggedFactoryCalls;
+        if (logged) {
+            logging::Log("%s #%ld (thread %lu, from %s)\n",
+                         function,
+                         call,
+                         GetCurrentThreadId(),
+                         DescribeAddress(returnAddress).c_str());
+        }
+        const HRESULT hr = create();
+        if (logged) {
+            logging::Log("%s #%ld returned 0x%08x\n", function, call, hr);
+        }
+        if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+            HookAdapterMethods(static_cast<IUnknown*>(*ppFactory));
+        }
+        return hr;
     }
 
     HRESULT WINAPI hooked_CreateDXGIFactory(REFIID riid, void** ppFactory) {
-        const HRESULT hr = g_original_CreateDXGIFactory(riid, ppFactory);
-        if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
-            HookAdapterMethods(static_cast<IUnknown*>(*ppFactory));
-        }
-        return hr;
+        return OnCreateFactory("CreateDXGIFactory", _ReturnAddress(), ppFactory, [&] {
+            return g_original_CreateDXGIFactory(riid, ppFactory);
+        });
     }
 
     HRESULT WINAPI hooked_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
-        const HRESULT hr = g_original_CreateDXGIFactory1(riid, ppFactory);
-        if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
-            HookAdapterMethods(static_cast<IUnknown*>(*ppFactory));
-        }
-        return hr;
+        return OnCreateFactory("CreateDXGIFactory1", _ReturnAddress(), ppFactory, [&] {
+            return g_original_CreateDXGIFactory1(riid, ppFactory);
+        });
     }
 
     HRESULT WINAPI hooked_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFactory) {
-        const HRESULT hr = g_original_CreateDXGIFactory2(Flags, riid, ppFactory);
-        if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
-            HookAdapterMethods(static_cast<IUnknown*>(*ppFactory));
-        }
-        return hr;
+        return OnCreateFactory("CreateDXGIFactory2", _ReturnAddress(), ppFactory, [&] {
+            return g_original_CreateDXGIFactory2(Flags, riid, ppFactory);
+        });
     }
 
     // Describe the adapter a device is created on, with its real vendor (for logging).
@@ -273,11 +343,18 @@ namespace {
                                                             ppImmediateContext);
         }
         t_inDeviceCreation = true;
+        logging::Log("Creating a D3D11 device (thread %lu, adapter %p, driverType=%d, flags=0x%x, swap chain=%s)\n",
+                     GetCurrentThreadId(),
+                     pAdapter,
+                     DriverType,
+                     Flags,
+                     ppSwapChain && pSwapChainDesc ? "yes" : "no");
 
         // A new context for each device (see adapter::AgsDevice).
         AGSContext* context = nullptr;
         {
             AGSGPUInfo gpuInfo{};
+            logging::Log("Calling agsInitialize()\n");
             const AGSReturnCode result = agsInitialize(AGS_CURRENT_VERSION, nullptr, &context, &gpuInfo);
             if (result != AGS_SUCCESS) {
                 logging::Log("agsInitialize() returned %d\n", result);
@@ -317,6 +394,9 @@ namespace {
 
         AGSDX11ReturnedParams returnedParams{};
         HRESULT hr;
+        if (context) {
+            logging::Log("Calling agsDriverExtensionsDX11_CreateDevice()\n");
+        }
         const AGSReturnCode agsResult =
             context ? agsDriverExtensionsDX11_CreateDevice(context, &creationParams, &extensionParams, &returnedParams)
                     : AGS_FAILURE;

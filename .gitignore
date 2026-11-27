@@ -4,3 +4,5 @@ bin/
 **/x64/
 **/obj/
 *.vcxproj.user
+utils/*.zip
+utils/iRacing-AMD-MVR-*/
